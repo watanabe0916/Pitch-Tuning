@@ -27,9 +27,15 @@ from pydantic import BaseModel
 from pitch.audio_io import load_audio_fileobj
 from pitch.analysis import analyze, Analysis
 from pitch.segmentation import segment_notes
-from pitch.render import render_master, render_output, mix_vocal_backing, \
+from pitch.phrases import detect_phrases
+from pitch.render import render_output, mix_vocal_backing, \
     true_peak_limit, normalize_true_peak
-from pitch.schema import notes_to_json, notes_from_json, f32_to_b64
+from pitch.schema import (notes_to_json, notes_from_json, f32_to_b64,
+                          note_to_dict, note_from_dict, segment_from_dict)
+
+import copy
+import hashlib
+import json as _json
 
 app = FastAPI(title="Vocal Pitch Editor")
 
@@ -43,10 +49,23 @@ class Backing:
 
 
 @dataclass
+class Phrase:
+    """1 フレーズ = 独立した解析単位（10.4）。無音区間でのみ分割される。"""
+    analysis: Analysis       # このフレーズだけの WORLD 解析（sp/ap）
+    start_sample: int        # 元音声上の開始サンプル
+    n_samples: int
+    render_key: str = ""     # 直近レンダの入力ハッシュ（キャッシュ判定）
+    render_out: np.ndarray = None   # 直近レンダ結果（master/limiter 適用前）
+
+
+@dataclass
 class Session:
-    analysis: Analysis
+    sample_rate: int
+    total_samples: int
     duration_sec: float
-    file_name: str = "vocal"
+    hop_sec: float
+    file_name: str
+    phrases: list             # list[Phrase]
     backing: Backing = None
 
 
@@ -54,7 +73,7 @@ SESSIONS: dict[str, Session] = {}
 
 
 # --------------------------------------------------------------------------
-# POST /api/session — 音声をアップロードして解析（sp/ap はサーバー常駐）
+# POST /api/session — アップロード → 無音でフレーズ分割 → 各フレーズを解析（10.4）
 # --------------------------------------------------------------------------
 
 @app.post("/api/session")
@@ -66,21 +85,48 @@ async def create_session(audio: UploadFile = File(...),
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, f"音声を読み込めませんでした: {exc}")
 
-    a = analyze(la.samples, la.sample_rate)   # F0 + sp + ap
-    notes = segment_notes(a)
+    x, sr = la.samples, la.sample_rate
+    spans = detect_phrases(x, sr)          # 無音でのみ分割（有声区間は切らない）
+    hop_sec = 0.005
+
+    phrases, global_notes = [], []
+    total_frames = int(round(la.duration_sec / hop_sec)) + 1
+    f0_global = np.zeros(total_frames, dtype=np.float32)
+    rms_global = np.full(total_frames, -120.0, dtype=np.float32)
+
+    for (lo, hi) in spans:
+        a = analyze(np.ascontiguousarray(x[lo:hi]), sr)   # フレーズ単位で解析
+        start_sec = lo / sr
+        phrases.append(Phrase(analysis=a, start_sample=lo, n_samples=hi - lo))
+        # ノートをグローバル時間へオフセットして集約
+        for note in segment_notes(a):
+            for s in note.segments:
+                s.start_sec += start_sec
+                s.end_sec += start_sec
+            global_notes.append(note)
+        # 描画用の f0/rms をグローバル配列へ配置
+        off = int(round(start_sec / hop_sec))
+        n = min(len(a.f0_hz), total_frames - off)
+        if n > 0:
+            f0_global[off:off + n] = a.f0_hz[:n]
+            rms_global[off:off + n] = a.rms_db[:n]
 
     sid = uuid.uuid4().hex
     stem = os.path.splitext(os.path.basename(audio.filename or "vocal"))[0]
-    SESSIONS[sid] = Session(analysis=a, duration_sec=la.duration_sec, file_name=stem)
+    SESSIONS[sid] = Session(sample_rate=sr, total_samples=len(x),
+                            duration_sec=la.duration_sec, hop_sec=hop_sec,
+                            file_name=stem, phrases=phrases)
 
     return {
         "sessionId": sid,
-        "sampleRate": a.sample_rate,
+        "sampleRate": sr,
         "durationSec": la.duration_sec,
-        "hopSec": a.hop_sec,
-        "f0Hz": f32_to_b64(a.f0_hz),      # 描画用
-        "rmsDb": f32_to_b64(a.rms_db),    # 音量表示用
-        "notes": notes_to_json(notes),
+        "hopSec": hop_sec,
+        "f0Hz": f32_to_b64(f0_global),
+        "rmsDb": f32_to_b64(rms_global),
+        "notes": notes_to_json(global_notes),
+        "phraseBounds": [p.start_sample / sr for p in phrases[1:]],   # 分割点（描画用）
+        "numPhrases": len(phrases),
     }
 
 
@@ -94,12 +140,59 @@ class RenderRequest(BaseModel):
     mode: str = "preview"
 
 
+def _local_notes(global_notes, start_sec, end_sec):
+    """[start_sec, end_sec) に始まるノートを抜き出し、フレーズ内ローカル時間へ移す。"""
+    out = []
+    for note in global_notes:
+        if start_sec <= note.start_sec < end_sec:
+            nn = copy.deepcopy(note)
+            for s in nn.segments:
+                s.start_sec -= start_sec
+                s.end_sec -= start_sec
+            out.append(nn)
+    return out
+
+
+def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
+    """フレーズ単位で再合成し、元の時間軸に配置して連結したボーカル波形（リミッター前）。
+
+    フレーズごとに入力(ローカルノート+reverb)のハッシュでキャッシュし、
+    **変わったフレーズだけ**を再合成する（長尺での応答性・10.4）。
+    リバーブの尾は次フレーズ前の無音へ自然に伸びる（加算配置）。マスターは全体後段。
+    """
+    global_notes = notes_from_json(es.get("notes", []))
+    reverb = es.get("reverb")
+    master = float(es.get("masterGainDb", 0.0))
+    sr = sess.sample_rate
+    reverb_key = _json.dumps(reverb, sort_keys=True) if reverb else ""
+
+    rendered = []   # (start_sample, y)
+    for ph in sess.phrases:
+        start_sec = ph.start_sample / sr
+        end_sec = start_sec + ph.n_samples / sr
+        local = _local_notes(global_notes, start_sec, end_sec)
+        key = hashlib.md5(
+            (_json.dumps([note_to_dict(n) for n in local], sort_keys=True)
+             + "|" + reverb_key).encode()).hexdigest()
+        if ph.render_key == key and ph.render_out is not None:
+            y = ph.render_out                         # キャッシュ命中
+        else:
+            y = render_output(ph.analysis, local, master_gain_db=0.0, reverb=reverb)
+            ph.render_key, ph.render_out = key, y     # キャッシュ更新
+        rendered.append((ph.start_sample, y))
+
+    total = max([sess.total_samples] + [s + len(y) for s, y in rendered])
+    out = np.zeros(total, dtype=np.float64)
+    for s, y in rendered:
+        out[s:s + len(y)] += y                        # 元の位置へ加算配置（尾の重なりも安全）
+    out *= 10.0 ** (master / 20.0)                    # マスターゲイン（全体後段）
+    return out
+
+
 def _render_vocal(sess: Session, es: dict, normalize: bool = False) -> np.ndarray:
-    """EditState からボーカル最終波形を得る（プレビュー・書き出しで共有）。"""
-    notes = notes_from_json(es.get("notes", []))
-    master_gain_db = float(es.get("masterGainDb", 0.0))
-    return render_master(sess.analysis, notes, master_gain_db=master_gain_db,
-                         reverb=es.get("reverb"), normalize=normalize)
+    """ボーカル最終波形（プレビュー・書き出しで共有）。出力段でトゥルーピーク処理。"""
+    y = _render_vocal_signal(sess, es)
+    return normalize_true_peak(y) if normalize else true_peak_limit(y)
 
 
 @app.post("/api/render")
@@ -113,7 +206,7 @@ def render(req: RenderRequest):
     y = _render_vocal(sess, req.editState or {}, normalize=False)
 
     buf = io.BytesIO()
-    sf.write(buf, y.astype(np.float32), sess.analysis.sample_rate,
+    sf.write(buf, y.astype(np.float32), sess.sample_rate,
              format="WAV", subtype="FLOAT")   # 書き出し既定(32bit float)と一致させる
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
@@ -143,14 +236,11 @@ def export(req: ExportRequest):
     if sess is None:
         raise HTTPException(404, "セッションが見つかりません（再アップロードしてください）")
 
-    sr = sess.analysis.sample_rate
+    sr = sess.sample_rate
     es = req.editState or {}
     if req.target == "mix" and sess.backing is not None:
-        # ミックス: ボーカル（リミッター前）+ 伴奏 → 加算 → 出力段でリミッター（13.2）。
-        notes = notes_from_json(es.get("notes", []))
-        vocal = render_output(sess.analysis, notes,
-                              master_gain_db=float(es.get("masterGainDb", 0.0)),
-                              reverb=es.get("reverb"))
+        # ミックス: ボーカル（フレーズ連結・リミッター前）+ 伴奏 → 加算 → 出力段でリミッター。
+        vocal = _render_vocal_signal(sess, es)
         b = es.get("backing", {}) or {}
         y = mix_vocal_backing(
             vocal, sess.backing.pcm, float(b.get("offsetSec", 0.0)), sr,
@@ -221,7 +311,7 @@ async def upload_backing(sessionId: str = Form(...), audio: UploadFile = File(..
     if data.shape[1] == 1:
         data = np.repeat(data, 2, axis=1)   # モノ伴奏はステレオ化
 
-    vocal_sr = sess.analysis.sample_rate
+    vocal_sr = sess.sample_rate
     if sr != vocal_sr:
         # 伴奏側だけをボーカルの SR に合わせる（ボーカルは絶対にリサンプルしない・12.1）。
         from scipy.signal import resample_poly

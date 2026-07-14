@@ -215,6 +215,17 @@ function renderScene(ctx, v, skip) {
     ctx.fillText(t.toFixed(step < 1 ? 1 : 0) + "s", x + 2, v.height - 4);
   }
 
+  // フレーズ境界（無音での分割点・10.4）を薄いシアンの破線で示す
+  const bounds = state.session.phraseBounds || [];
+  if (bounds.length) {
+    ctx.strokeStyle = "rgba(90,200,220,0.5)"; ctx.setLineDash([6, 4]);
+    for (const tb of bounds) {
+      const x = v.timeToX(tb);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
   drawF0Curve(ctx, v);
   for (const note of state.session.notes) {
     note.segments.forEach((s, i) => {
