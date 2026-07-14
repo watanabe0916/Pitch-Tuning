@@ -20,6 +20,7 @@
     <span id="meter" class="meter" hidden><span id="meterbar" class="meterbar"></span><span id="meterlabel">-∞</span></span>
     <button id="play" disabled>▶ 再生</button>
     <button id="stop" disabled>■ 停止</button>
+    <button id="tostart" title="再生位置を先頭に戻す" disabled>↩︎</button>
     <span class="sep"></span>
     <label class="slider">Master <input id="master" type="range" min="-24" max="6" step="0.5" value="0" /><span id="masterval">0dB</span></label>
     <label class="slider">補正 <input id="strength" type="range" min="0" max="1" step="0.05" value="0" disabled /><span id="strengthval">–</span></label>
@@ -54,7 +55,7 @@
 
   <div id="editor" class="editor">
     <div class="keyswrap"><canvas id="keys"></canvas></div>
-    <div class="gridwrap"><canvas id="grid"></canvas><div id="playhead" class="playhead" hidden></div></div>
+    <div class="gridwrap"><canvas id="grid"></canvas><div id="playhead" class="playhead" hidden><span class="phgrab" title="ドラッグで再生位置を移動"></span></div></div>
   </div>
 
   <div id="backinglane" class="backinglane" hidden>

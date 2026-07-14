@@ -64,6 +64,12 @@ button:not(:disabled):hover { background: #3a4150; }
 /* 再生ヘッド（両レーンを貫く縦線）。scroll 内容と一緒に動く。 */
 .playhead { position: absolute; top: 0; height: 100%; width: 2px; margin-left: -1px;
   background: #ff5a5a; pointer-events: none; z-index: 3; }
+/* 上端のつまみ。ここだけクリック可能にして左右ドラッグで再生位置を動かす。 */
+.phgrab { position: absolute; top: 0; left: -6px; width: 14px; height: 14px;
+  background: #ff5a5a; border-radius: 0 0 4px 4px; pointer-events: auto;
+  cursor: ew-resize; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
+.phgrab:hover { background: #ff7a7a; }
+#tostart { padding: 7px 12px; font-size: 15px; line-height: 1; }
 
 /* 伴奏レーン（12.4） */
 .backinglane { flex: 0 0 96px; display: flex; border-top: 2px solid #2c313a; background: #1a1d23; }

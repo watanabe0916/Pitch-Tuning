@@ -28,8 +28,11 @@ const state = {
   rec: null,            // 録音中の状態 {active, stream, ctx, chunks, peak, meterRAF}
   audio: {
     ctx: null, buffer: null, source: null, playing: false,
-    backingSrc: null, vocalGain: null, backingGain: null, startAt: 0
+    backingSrc: null, vocalGain: null, backingGain: null, startAt: 0,
+    seekAt: 0,      // 今回の再生を開始した位置（秒）
+    playSec: 0,     // 再生ヘッドの現在位置（秒）。停止後もここから再開する
   },
+  phDrag: false,    // 再生ヘッドを掴んでドラッグ中か
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
   dirty: false,         // 未再合成の編集があるか
 };
@@ -60,6 +63,8 @@ const els = {
   bremove: document.getElementById("bremove"),
   playhead: document.getElementById("playhead"),
   bplayhead: document.getElementById("bplayhead"),
+  phgrab: document.querySelector(".phgrab"),
+  tostart: document.getElementById("tostart"),
   record: document.getElementById("record"),
   meter: document.getElementById("meter"),
   meterbar: document.getElementById("meterbar"),
@@ -130,6 +135,7 @@ function draw() {
   renderScene(els.grid.getContext("2d"), state.view, null);
   drawKeys();
   if (state.backing) drawBacking();
+  updatePlayheadStatic();   // ズーム/スクロール後も再生ヘッドを正しい位置へ
 }
 
 // ドラッグ中の再描画を requestAnimationFrame で間引く（最大リフレッシュレート）。
@@ -832,6 +838,8 @@ els.file.addEventListener("change", async (e) => {
     j.rmsDb = b64ToF32(j.rmsDb);
     state.session = j;
     state.dirty = false;
+    state.audio.playSec = 0; state.audio.seekAt = 0;   // 再生位置を先頭へ
+    els.tostart.disabled = false;
     resizeCanvases(); draw();
     const nSeg = j.notes.reduce((a, n) => a + n.segments.length, 0);
     setStatus(`${j.durationSec.toFixed(2)}s / ${j.sampleRate}Hz / ${j.notes.length}ノート ${nSeg}セグメント`);
@@ -1110,12 +1118,22 @@ function ensureAudioCtx() {
   return state.audio.ctx;
 }
 
+function playDur() {
+  return state.audio.buffer ? state.audio.buffer.duration
+    : (state.session ? state.session.durationSec : 0);
+}
+
 function playAudio() {
   const a = state.audio;
   if (!a.buffer) return;
-  stopAudio();
+  stopAudio(true);   // 位置は保持したまま停止
   const ctx = ensureAudioCtx();
   const t0 = ctx.currentTime + 0.1;   // 100ms ルックアヘッド（12.2）
+
+  // 停止位置(playSec)から再生。末尾に張り付いていたら先頭から。
+  const dur = playDur();
+  let seek = a.playSec || 0;
+  if (seek >= dur - 0.02 || seek < 0) seek = 0;
 
   // ボーカル
   a.vocalGain = ctx.createGain();
@@ -1124,9 +1142,9 @@ function playAudio() {
   vsrc.buffer = a.buffer; vsrc.connect(a.vocalGain);
 
   // 伴奏（あれば）: 単一 AudioContext 上で同じ t0 基準に開始（AC-18）
-  let bsrc = null, sched = { vocalStart: t0, vocalOffset: 0, backingStart: t0, backingOffset: 0 };
+  let bsrc = null, sched = { vocalStart: t0, vocalOffset: seek, backingStart: t0, backingOffset: seek };
   if (state.backing && state.backing.buffer) {
-    sched = PL.computePlaybackSchedule(t0, state.backing.offsetSec, 0);
+    sched = PL.computePlaybackSchedule(t0, state.backing.offsetSec, seek);
     a.backingGain = ctx.createGain();
     a.backingGain.connect(ctx.destination);
     bsrc = ctx.createBufferSource();
@@ -1134,18 +1152,32 @@ function playAudio() {
   }
   applyMixGains();   // ミュート/ソロ/音量をゲインノードへ
 
-  vsrc.onended = () => { if (a.source === vsrc) stopAudio(); };
+  // 末尾まで再生し終えたら、再生開始位置に戻して停止（もう一度 Play で同じ所から再生できる）
+  vsrc.onended = () => { if (a.source === vsrc) { a.playSec = a.seekAt; stopAudio(true); } };
   vsrc.start(sched.vocalStart, sched.vocalOffset);
   if (bsrc) bsrc.start(Math.max(ctx.currentTime, sched.backingStart),
     Math.max(0, sched.backingOffset));
 
-  a.source = vsrc; a.backingSrc = bsrc; a.playing = true; a.startAt = t0;
+  a.source = vsrc; a.backingSrc = bsrc; a.playing = true; a.startAt = t0; a.seekAt = seek;
   setTransportPlaying(true);
   startPlayhead();
 }
 
-function stopAudio() {
+// 再生ヘッドの現在位置（秒）: 再生中は経過時間から、停止中は保存値。
+function currentPlaySec() {
   const a = state.audio;
+  if (a.playing && a.ctx) {
+    const t = a.seekAt + (a.ctx.currentTime - a.startAt);
+    return Math.max(0, Math.min(playDur(), t));
+  }
+  return a.playSec || 0;
+}
+
+// keepPos=false（手動停止）: 現在の再生位置を playSec に固定して、そこから再開できるようにする。
+// keepPos=true: 呼び出し側が playSec を既に決めている（再合成前の一時停止・末尾到達など）。
+function stopAudio(keepPos) {
+  const a = state.audio;
+  if (a.playing && !keepPos) a.playSec = currentPlaySec();
   for (const s of [a.source, a.backingSrc]) {
     if (s) { try { s.onended = null; s.stop(); } catch (_) { } }
   }
@@ -1188,29 +1220,68 @@ els.play.addEventListener("click", () => {
   ensureAudioCtx().resume();
   if (state.dirty) renderAndLoad(true); else playAudio();   // AC-20: dirty なら必ず再合成
 });
-els.stop.addEventListener("click", stopAudio);
+els.stop.addEventListener("click", () => stopAudio(false));
+
+// 先頭に戻る（↩︎）: 再生ヘッドを 0 秒へ。再生中なら止めてから戻す。
+els.tostart.addEventListener("click", () => {
+  if (state.audio.playing) stopAudio(true);
+  state.audio.playSec = 0;
+  updatePlayheadStatic();
+});
 
 // --- 再生ヘッド（両レーンを貫く縦線・12.4） ---
+// 停止中も常に表示し、playSec の位置に置く。再生中は RAF で動かす。
 let _playheadRAF = 0;
+function positionPlayhead(t) {
+  if (!state.view) return;
+  const x = state.view.timeToX(t);
+  els.playhead.style.left = x + "px";
+  els.bplayhead.style.left = x + "px";
+}
+// 停止中の静的表示。session があれば表示、伴奏があれば伴奏レーンにも表示。
+function updatePlayheadStatic() {
+  const on = !!state.session;
+  els.playhead.hidden = !on;
+  els.bplayhead.hidden = !(on && state.backing);
+  if (on) positionPlayhead(currentPlaySec());
+}
 function startPlayhead() {
   els.playhead.hidden = false;
   if (state.backing) els.bplayhead.hidden = false;
   const tick = () => {
     if (!state.audio.playing) return;
-    const t = state.audio.ctx.currentTime - state.audio.startAt;   // 経過秒（seek=0）
-    if (t >= 0 && state.view) {
-      const x = state.view.timeToX(t);
-      els.playhead.style.left = x + "px";
-      if (!els.bplayhead.hidden) els.bplayhead.style.left = x + "px";
-    }
+    positionPlayhead(currentPlaySec());
     _playheadRAF = requestAnimationFrame(tick);
   };
   _playheadRAF = requestAnimationFrame(tick);
 }
 function stopPlayhead() {
   cancelAnimationFrame(_playheadRAF);
-  els.playhead.hidden = true; els.bplayhead.hidden = true;
+  updatePlayheadStatic();   // 停止位置に固定して表示し続ける
 }
+
+// 再生ヘッドのつまみをドラッグして再生位置を移動（停止中のみ）。
+function playheadDragMove(e) {
+  if (!state.phDrag || !state.session) return;
+  const rect = els.grid.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const t = Math.max(0, Math.min(playDur(), state.view.xToTime(x)));
+  state.audio.playSec = t;
+  positionPlayhead(t);
+  setStatus("再生位置 " + t.toFixed(2) + "s");
+}
+function playheadDragEnd() {
+  state.phDrag = false;
+  window.removeEventListener("mousemove", playheadDragMove);
+  window.removeEventListener("mouseup", playheadDragEnd);
+}
+els.phgrab.addEventListener("mousedown", (e) => {
+  if (!state.session || state.audio.playing) return;   // 再生中は移動不可
+  e.preventDefault(); e.stopPropagation();
+  state.phDrag = true;
+  window.addEventListener("mousemove", playheadDragMove);
+  window.addEventListener("mouseup", playheadDragEnd);
+});
 
 // 開発用: URL に #demo を付けるとサンプル音声を自動読み込みする。
 async function loadFromUrl(url) {
