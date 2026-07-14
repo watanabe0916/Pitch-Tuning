@@ -1,0 +1,38 @@
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: -apple-system, "Hiragino Sans", system-ui, sans-serif;
+  background: #1a1d23; color: #e6e8ec; display: flex; flex-direction: column;
+}
+
+.toolbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; background: #23272f; border-bottom: 1px solid #333;
+  flex-wrap: wrap;
+}
+.filebtn {
+  background: #3a6ea5; color: #fff; padding: 7px 14px; border-radius: 6px;
+  cursor: pointer; font-size: 13px;
+}
+.filebtn:hover { background: #4a7eb5; }
+button {
+  background: #2f3540; color: #e6e8ec; border: 1px solid #444;
+  padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+button:disabled { opacity: 0.4; cursor: default; }
+button:not(:disabled):hover { background: #3a4150; }
+.sep { flex: 0 0 1px; height: 22px; background: #444; }
+.snaplabel, .hint { font-size: 12px; color: #9aa0aa; }
+#snap { color: #6cc06c; font-weight: 600; }
+.status { margin-left: auto; font-size: 12px; color: #9aa0aa; }
+
+.editor { position: relative; flex: 1; display: flex; overflow: hidden; min-height: 0; }
+/* canvas をラッパで absolute 配置し、canvas の固有アスペクト比が
+   flex レイアウトの幅計算を乗っ取る問題を回避する。 */
+.keyswrap { flex: 0 0 56px; position: relative; background: #1e2127; }
+.gridwrap { flex: 1 1 0; min-width: 0; position: relative; background: #15171c; }
+.keyswrap canvas, .gridwrap canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+}
+#grid { cursor: crosshair; }
+#grid.locked { cursor: not-allowed; }

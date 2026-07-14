@@ -1,7 +1,9 @@
 # ボーカル・ピッチエディタ — サーバー側（解析・再合成）
 
-CLAUDE.md の仕様に基づく実装。**Phase 1（F0 推定 + ノート自動分割）**、
-**Phase 2（renderF0/renderGain + WORLD 再合成、AC-1〜5/7/8）** が完了。
+CLAUDE.md の仕様に基づく実装。
+- **Phase 1**: F0 推定 + ノート自動分割
+- **Phase 2**: renderF0/renderGain + WORLD 再合成（AC-1〜5/7/8）
+- **Phase 3**: Web UI（Canvas ピアノロール・縦ドラッグ・50cent スナップ）+ `/api/session`・`/api/render`
 
 ## セットアップ
 
@@ -104,8 +106,46 @@ python -m pytest tests/test_phase2.py -v -s
 - ビブラート（5.5Hz）は cent 領域ローパスで除去され、分割判定に影響しない
 - アタックのしゃくりは時間重み付き中央値により baseCents に引きずられない
 
-## 次のステップ（Phase 3）
+## Phase 3: Web UI とサーバー
 
-Web UI（Canvas ピアノロール、縦ドラッグ、50cent スナップ）+
-`POST /api/session` / `/api/render`。サーバー側は sp/ap を常駐させ、
-クライアントとは JSON（EditState）+ WAV のみをやり取りする（P4/10章）。
+```bash
+cd server && conda activate pitch
+uvicorn app:app --reload --port 8000
+# → ブラウザで http://localhost:8000/
+#   「音声を開く」で WAV/FLAC/AIFF を読み込み → ピアノロールにノート表示
+#   青い矩形を縦ドラッグ → 音高が 50cent 刻みで変わり、離すと再合成して再生
+#   Shift=1cent 微調整 / Alt=100cent 粗スナップ
+# 開発用: http://localhost:8000/#demo でサンプル音声を自動読み込み
+```
+
+### 構成（Phase 3）
+
+```
+server/
+  app.py                 # FastAPI。POST /api/session, POST /api/render,
+                         #   DELETE /api/session/:id。sp/ap はサーバー常駐(P4)、
+                         #   クライアントとは JSON(EditState)+WAV のみ交換
+  pitch/schema.py        # Note/Segment ⇔ JSON、Float32→base64
+  static/
+    index.html / style.css
+    pitchlogic.js        # DOM 非依存の純粋ロジック（座標変換/スナップ/ヒットテスト）
+    app.js               # Canvas 描画・ドラッグ・/api/render・Web Audio 再生
+  tests/test_pitchlogic.js  # 縦ドラッグ/スナップ/座標変換の自動テスト（node で実行）
+```
+
+### Phase 3 検証
+
+- `POST /api/render` は編集後 EditState を全区間一括再合成し WAV を返す。
+  `pitchOffsetCents=+200` を与えた出力を再解析すると、該当ノートが**ちょうど
+  +200cent** 高い（測定 200.0）。
+- `node tests/test_pitchlogic.js` — 26 チェック（50/1/100cent スナップ、
+  縦ドラッグ→音高、時刻→セグメントのヒットテスト、座標変換の往復）通過。
+- ブラウザ実機（headless Chrome）で `#demo` 自動読み込み → 解析 → ピアノロール
+  描画 → 再合成まで JS エラー無しで到達することを確認。
+
+> 設計原則 P4: 解析データ(sp/ap ≈ 原音の 10 倍)はクライアントに送らない。
+> 編集のたびに EditState(JSON) を送り、返ってきた WAV を差し替えて再生する。
+
+## 次のステップ（Phase 4）
+
+分割・結合・遷移区間・セグメント音量の UI（AC-6、遷移帯と塗り高さの可視化）。

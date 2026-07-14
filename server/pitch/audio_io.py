@@ -53,11 +53,24 @@ def load_audio(path: str) -> LoadedAudio:
             "MP3/M4A の場合は ffmpeg 経由のデコードが必要です。"
         ) from exc
 
-    # data: shape=(N, channels) — モノラルへミックスダウン
-    if data.shape[1] > 1:
-        mono = data.mean(axis=1)
-    else:
-        mono = data[:, 0]
+    return _to_mono(data, sr)
 
+
+def load_audio_fileobj(fileobj, filename: str = "") -> LoadedAudio:
+    """アップロードされたファイル様オブジェクトから読み込む（API 用）。
+
+    soundfile はファイル様オブジェクトを直接読める。MP3/M4A は libsndfile が
+    対応しないため RuntimeError になる（Phase 3 では可逆形式のみ対応）。
+    """
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in _LOSSY_EXTS:
+        warnings.warn(f"非可逆圧縮フォーマット ({ext}) は品質が落ちます。", stacklevel=2)
+    data, sr = sf.read(fileobj, dtype="float32", always_2d=True)
+    return _to_mono(data, sr)
+
+
+def _to_mono(data: np.ndarray, sr: int) -> LoadedAudio:
+    # data: shape=(N, channels) — モノラルへミックスダウン（10.1）
+    mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
     return LoadedAudio(samples=np.ascontiguousarray(mono, dtype=np.float32),
                        sample_rate=int(sr))

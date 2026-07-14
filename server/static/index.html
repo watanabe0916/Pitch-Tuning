@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ボーカル・ピッチエディタ</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="toolbar">
+    <label class="filebtn">
+      音声を開く
+      <input id="file" type="file" accept=".wav,.flac,.aiff,.aif" hidden />
+    </label>
+    <button id="play" disabled>▶ 再生</button>
+    <button id="stop" disabled>■ 停止</button>
+    <span class="sep"></span>
+    <label class="snaplabel">スナップ:
+      <span id="snap">50 cent</span>
+    </label>
+    <span class="hint">縦ドラッグ=音高 / Shift=1cent / Alt=100cent</span>
+    <span id="status" class="status"></span>
+  </header>
+
+  <div id="editor" class="editor">
+    <div class="keyswrap"><canvas id="keys"></canvas></div>
+    <div class="gridwrap"><canvas id="grid"></canvas></div>
+  </div>
+
+  <script src="/static/pitchlogic.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
