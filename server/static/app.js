@@ -90,28 +90,83 @@ function draw() {
   if (!state.session) return;
   const { contentW, viewH } = layout();
   state.view = makeView(state.session, contentW, viewH);
-  drawGrid();
+  renderScene(els.grid.getContext("2d"), state.view, null);
   drawKeys();
 }
 
 // ドラッグ中の再描画を requestAnimationFrame で間引く（最大リフレッシュレート）。
-// mousemove は毎秒100回超発火するため、直接 draw() すると大きな canvas の
-// 全再描画がCPU/GPUを占有し他タブまで重くなる。rAF で1フレーム1回に集約する。
+// さらに、ドラッグ中は「動かさない部分」を一度だけオフスクリーンへ描いておき、
+// 毎フレームはそのビットマップを貼り付け（GPUで高速）＋動かすセグメントだけを
+// 上描きする。これで1フレームの負荷が内容量（音声長・ノート数）に依らず一定になる。
 let _drawScheduled = false;
 function scheduleDraw() {
   if (_drawScheduled) return;
   _drawScheduled = true;
-  requestAnimationFrame(() => { _drawScheduled = false; draw(); });
+  requestAnimationFrame(() => {
+    _drawScheduled = false;
+    if (state.drag && state.drag.bgReady) drawDragFrame();
+    else draw();
+  });
 }
 
-function drawGrid() {
-  const v = state.view, ctx = els.grid.getContext("2d");
+// --- オフスクリーン背景キャッシュ（ドラッグ中のみ使用） ---
+let _bg = null, _bgCtx = null;
+function ensureBg() {
+  if (!_bg) { _bg = document.createElement("canvas"); _bgCtx = _bg.getContext("2d"); }
+  if (_bg.width !== els.grid.width || _bg.height !== els.grid.height) {
+    _bg.width = els.grid.width; _bg.height = els.grid.height;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  _bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return _bgCtx;
+}
+
+// ドラッグ開始時: liveSegs 以外の全シーンを背景キャッシュに描く。
+function prepareDragBackground(liveSegs) {
+  renderScene(ensureBg(), state.view, liveSegs);
+  state.drag.liveSegs = liveSegs;
+  state.drag.bgReady = true;
+}
+
+// ドラッグ中フレーム: 見えている範囲だけ背景を貼り付け → 動かすセグメントを上描き。
+// 更新範囲をビューポート幅に限定するので、音声が長く canvas が横に巨大でも
+// 1フレームの負荷は一定（画面に見えている部分だけ）になる。
+function drawDragFrame() {
+  const ctx = els.grid.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const gw = gridwrap();
+  // 可視範囲（デバイスピクセル）
+  const dx = Math.max(0, Math.floor(gw.scrollLeft * dpr));
+  const dw = Math.min(els.grid.width - dx, Math.ceil(gw.clientWidth * dpr) + 1);
+  const dh = els.grid.height;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(dx, 0, dw, dh);
+  ctx.drawImage(_bg, dx, 0, dw, dh, dx, 0, dw, dh);   // 同じ矩形をコピー
+  ctx.restore();                                        // dpr 変換に戻す
+  for (const seg of state.drag.liveSegs) {
+    const loc = locateSeg(seg);
+    if (loc) drawOneSegment(ctx, state.view, loc.note, seg, loc.i);
+  }
+}
+
+function locateSeg(seg) {
+  for (const note of state.session.notes) {
+    const i = note.segments.indexOf(seg);
+    if (i >= 0) return { note, i };
+  }
+  return null;
+}
+
+// 全シーン（グリッド + F0曲線 + ノート）を任意の context に描く。
+// skip: 省略するセグメントの Set（ドラッグ中の背景生成で使う）。
+function renderScene(ctx, v, skip) {
   ctx.clearRect(0, 0, v.width, v.height);
 
   // 半音行の背景（黒鍵行を薄く）
   for (let c = v.cLo; c <= v.cHi; c += 100) {
     const midi = Math.round(c / 100);
-    const y = v.centsToY(c + 50);   // 行の中心を音高に合わせる
+    const y = v.centsToY(c + 50);
     const h = v.rowHeightPx;
     ctx.fillStyle = isBlackKey(midi) ? "#191c22" : "#1c2027";
     ctx.fillRect(0, y - h / 2, v.width, h);
@@ -119,16 +174,22 @@ function drawGrid() {
     ctx.beginPath(); ctx.moveTo(0, v.centsToY(c)); ctx.lineTo(v.width, v.centsToY(c)); ctx.stroke();
   }
 
-  // 時間グリッド（0.5s ごと）
+  // 時間グリッド（画面幅に応じ間隔を選び、見える範囲だけ描く）
   ctx.strokeStyle = "#22262e"; ctx.fillStyle = "#555"; ctx.font = "10px sans-serif";
-  for (let t = 0; t <= v.t1; t += 0.5) {
+  const step = v.t1 > 30 ? 5 : (v.t1 > 12 ? 1 : 0.5);
+  for (let t = 0; t <= v.t1; t += step) {
     const x = v.timeToX(t);
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
-    ctx.fillText(t.toFixed(1) + "s", x + 2, v.height - 4);
+    ctx.fillText(t.toFixed(step < 1 ? 1 : 0) + "s", x + 2, v.height - 4);
   }
 
   drawF0Curve(ctx, v);
-  drawNotes(ctx, v);
+  for (const note of state.session.notes) {
+    note.segments.forEach((s, i) => {
+      if (skip && skip.has(s)) return;
+      drawOneSegment(ctx, v, note, s, i);
+    });
+  }
 }
 
 // 白い F0 曲線（編集オフセットを反映した表示用の近似）
@@ -149,54 +210,48 @@ function drawF0Curve(ctx, v) {
   ctx.stroke();
 }
 
-function drawNotes(ctx, v) {
+// 1 セグメント分の描画（塗り高さ・RMS背景・枠・遷移帯）。
+function drawOneSegment(ctx, v, note, s, i) {
   const h = Math.max(10, v.rowHeightPx * 0.9);
   const rms = state.session.rmsDb, hop = state.session.hopSec;
-  for (const note of state.session.notes) {
-    note.segments.forEach((s, i) => {
-      const c = s.baseCents + s.pitchOffsetCents;
-      const x0 = v.timeToX(s.startSec), x1 = v.timeToX(s.endSec);
-      const w = Math.max(1, x1 - x0);
-      const yc = v.centsToY(c), yTop = yc - h / 2, yBot = yc + h / 2;
-      const active = state.drag && state.drag.seg === s;
-      const selected = state.selected === s;
+  const c = s.baseCents + s.pitchOffsetCents;
+  const x0 = v.timeToX(s.startSec), x1 = v.timeToX(s.endSec);
+  const w = Math.max(1, x1 - x0);
+  const yc = v.centsToY(c), yTop = yc - h / 2, yBot = yc + h / 2;
+  const active = state.drag && state.drag.seg === s;
+  const selected = state.selected === s;
 
-      // 原音の RMS 包絡線を薄グレーで（矩形内の下端基準・6.3）
-      drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop);
+  drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop);
 
-      if (s.mute) {
-        // ミュート: 塗りを消して枠線のみ（アウトライン表示・6.3）
-        ctx.strokeStyle = "rgba(170,170,180,0.85)";
-        ctx.setLineDash([4, 3]);
-        ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
-        ctx.setLineDash([]);
-      } else {
-        // ゲイン塗り: 下端から fill 比率ぶん（0dB=行いっぱい, 6.3）
-        const fill = PL.gainFillFraction(s.gainDb);
-        const fh = h * fill;
-        ctx.fillStyle = active ? "rgba(95,155,240,0.95)"
-          : (selected ? "rgba(88,148,232,0.9)"
-            : (i % 2 ? "rgba(70,120,200,0.72)" : "rgba(80,135,215,0.8)"));
-        ctx.fillRect(x0, yBot - fh, w, fh);
-        ctx.strokeStyle = selected ? "rgba(255,225,130,1)" : "rgba(150,190,240,0.9)";
-        ctx.lineWidth = selected ? 2 : 1;
-        ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
-        ctx.lineWidth = 1;
-      }
+  if (s.mute) {
+    ctx.strokeStyle = "rgba(170,170,180,0.85)";
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
+    ctx.setLineDash([]);
+  } else {
+    const fill = PL.gainFillFraction(s.gainDb);
+    const fh = h * fill;
+    ctx.fillStyle = active ? "rgba(95,155,240,0.95)"
+      : (selected ? "rgba(88,148,232,0.9)"
+        : (i % 2 ? "rgba(70,120,200,0.72)" : "rgba(80,135,215,0.8)"));
+    ctx.fillRect(x0, yBot - fh, w, fh);
+    ctx.strokeStyle = selected ? "rgba(255,225,130,1)" : "rgba(150,190,240,0.9)";
+    ctx.lineWidth = selected ? 2 : 1;
+    ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
+    ctx.lineWidth = 1;
+  }
 
-      // 分割線 + 遷移区間帯（F-3 の可視化）
-      if (i > 0) {
-        const prev = note.segments[i - 1];
-        const yPrev = v.centsToY(prev.baseCents + prev.pitchOffsetCents);
-        const tau = (s.transitionInMs || 40) / 1000;
-        const bx0 = v.timeToX(s.startSec - tau / 2), bx1 = v.timeToX(s.startSec + tau / 2);
-        const bandTop = Math.min(yPrev, yc) - h / 2, bandBot = Math.max(yPrev, yc) + h / 2;
-        ctx.fillStyle = "rgba(230,180,90,0.22)";
-        ctx.fillRect(bx0, bandTop, Math.max(2, bx1 - bx0), bandBot - bandTop);
-        ctx.strokeStyle = "rgba(235,185,95,0.95)";
-        ctx.beginPath(); ctx.moveTo(x0, bandTop); ctx.lineTo(x0, bandBot); ctx.stroke();
-      }
-    });
+  // 分割線 + 遷移区間帯（F-3 の可視化）
+  if (i > 0) {
+    const prev = note.segments[i - 1];
+    const yPrev = v.centsToY(prev.baseCents + prev.pitchOffsetCents);
+    const tau = (s.transitionInMs || 40) / 1000;
+    const bx0 = v.timeToX(s.startSec - tau / 2), bx1 = v.timeToX(s.startSec + tau / 2);
+    const bandTop = Math.min(yPrev, yc) - h / 2, bandBot = Math.max(yPrev, yc) + h / 2;
+    ctx.fillStyle = "rgba(230,180,90,0.22)";
+    ctx.fillRect(bx0, bandTop, Math.max(2, bx1 - bx0), bandBot - bandTop);
+    ctx.strokeStyle = "rgba(235,185,95,0.95)";
+    ctx.beginPath(); ctx.moveTo(x0, bandTop); ctx.lineTo(x0, bandBot); ctx.stroke();
   }
 }
 
@@ -296,8 +351,13 @@ els.grid.addEventListener("mousedown", (e) => {
     }
   }
   state.drag.moved = false;
+  // ドラッグ中に動かすセグメント（これらを除いた背景を1回だけキャッシュ）。
+  const live = state.drag.mode === "divider"
+    ? [state.drag.note.segments[state.drag.bi - 1], state.drag.note.segments[state.drag.bi]]
+    : [state.drag.seg];
   updateSnapLabel(e);
-  draw();
+  draw();                                   // まず通常描画（選択ハイライト等を反映）
+  prepareDragBackground(new Set(live));     // 動かさない部分を背景キャッシュへ
 });
 
 // マウスの画面座標だけ保持（getBoundingClientRect を毎回呼ぶと強制リフローで重い）。
