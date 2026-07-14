@@ -17,7 +17,7 @@ const state = {
   drag: null,           // 進行中のドラッグ {mode, ...}
   selected: null,       // 選択中セグメント（補正スライダー/M の対象）
   master: 0.0,          // masterGainDb
-  mouse: { px: 0, py: 0 },
+  mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
   audio: { ctx: null, buffer: null, source: null, playing: false },
   dirty: false,         // 未再合成の編集があるか
@@ -40,6 +40,24 @@ const els = {
 
 const setStatus = (msg) => { els.status.textContent = msg; };
 
+// 横方向のズーム率。内容幅 = 秒数 × PX_PER_SEC（最低でもビューポート幅を満たす）。
+// これにより長い音声は横スクロールになり、鍵盤列は固定のまま常に見える。
+const PX_PER_SEC = 260;
+const MAX_CANVAS_PX = 30000;   // canvas 幅の上限（描画バッファの安全域）
+
+const gridwrap = () => els.grid.parentElement;
+const keyswrap = () => els.keys.parentElement;
+
+// レイアウト寸法（CSS px）: 内容幅と表示高さ。
+function layout() {
+  const gw = gridwrap();
+  const viewH = gw.clientHeight;
+  const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
+  let contentW = Math.max(gw.clientWidth, dur * PX_PER_SEC);
+  contentW = Math.min(contentW, MAX_CANVAS_PX);
+  return { contentW, viewH };
+}
+
 // ==========================================================================
 // View: 座標変換（time↔x, cents↔y）を集約
 // ==========================================================================
@@ -54,20 +72,36 @@ function makeView(session, width, height) {
 // ==========================================================================
 function resizeCanvases() {
   const dpr = window.devicePixelRatio || 1;
-  for (const c of [els.grid, els.keys]) {
-    const r = c.getBoundingClientRect();
-    c.width = Math.round(r.width * dpr);
-    c.height = Math.round(r.height * dpr);
-    c.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
+  const { contentW, viewH } = layout();
+  // グリッド: 内容幅ぶんの横長 canvas（ラッパが横スクロールする）
+  els.grid.style.width = contentW + "px";
+  els.grid.style.height = viewH + "px";
+  els.grid.width = Math.round(contentW * dpr);
+  els.grid.height = Math.round(viewH * dpr);
+  els.grid.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 鍵盤: 固定幅 × 表示高さ
+  const kw = keyswrap().clientWidth;
+  els.keys.width = Math.round(kw * dpr);
+  els.keys.height = Math.round(viewH * dpr);
+  els.keys.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function draw() {
   if (!state.session) return;
-  const r = els.grid.getBoundingClientRect();
-  state.view = makeView(state.session, r.width, r.height);
+  const { contentW, viewH } = layout();
+  state.view = makeView(state.session, contentW, viewH);
   drawGrid();
   drawKeys();
+}
+
+// ドラッグ中の再描画を requestAnimationFrame で間引く（最大リフレッシュレート）。
+// mousemove は毎秒100回超発火するため、直接 draw() すると大きな canvas の
+// 全再描画がCPU/GPUを占有し他タブまで重くなる。rAF で1フレーム1回に集約する。
+let _drawScheduled = false;
+function scheduleDraw() {
+  if (_drawScheduled) return;
+  _drawScheduled = true;
+  requestAnimationFrame(() => { _drawScheduled = false; draw(); });
 }
 
 function drawGrid() {
@@ -266,9 +300,14 @@ els.grid.addEventListener("mousedown", (e) => {
   draw();
 });
 
+// マウスの画面座標だけ保持（getBoundingClientRect を毎回呼ぶと強制リフローで重い）。
+// グリッド内 x や時刻は必要になった時だけ計算する。
+function mouseTime() {
+  return state.view.xToTime(state.mouse.clientX - els.grid.getBoundingClientRect().left);
+}
+
 window.addEventListener("mousemove", (e) => {
-  const rect = els.grid.getBoundingClientRect();
-  state.mouse = { px: e.clientX - rect.left, py: e.clientY - rect.top };
+  state.mouse = { clientX: e.clientX, clientY: e.clientY };
   const d = state.drag;
   if (!d) return;
   d.moved = true;
@@ -285,7 +324,7 @@ window.addEventListener("mousemove", (e) => {
     g = Math.max(PL.GAIN_FILL_MIN_DB, Math.min(PL.GAIN_FILL_MAX_DB, Math.round(g * 2) / 2));
     d.seg.gainDb = g; d.seg.mute = false;
   } else if (d.mode === "divider") {
-    const t = v.xToTime(state.mouse.px);
+    const t = mouseTime();
     const segs = d.note.segments, minL = 0.02;
     const lo = segs[d.bi - 1].startSec + minL, hi = segs[d.bi].endSec - minL;
     const tt = Math.max(lo, Math.min(hi, t));
@@ -295,7 +334,7 @@ window.addEventListener("mousemove", (e) => {
     let ms = d.startTrans + (e.clientX - d.startX) * msPerPx * 2;
     d.seg.transitionInMs = Math.max(5, Math.min(300, ms));
   }
-  draw();
+  scheduleDraw();   // rAF で間引いて再描画（他タブが重くならないように）
 });
 
 window.addEventListener("mouseup", () => {
@@ -323,8 +362,8 @@ els.grid.addEventListener("dblclick", (e) => {
 window.addEventListener("keydown", (e) => {
   if (state.drag) updateSnapLabel(e);
   if (e.key === "g" || e.key === "G") state.gKey = true;
-  if (!state.session || state.audio.playing) return;
-  const t = state.view ? state.view.xToTime(state.mouse.px) : 0;
+  if (!state.session || state.audio.playing || !state.view) return;
+  const t = mouseTime();
   if (e.key === "s" || e.key === "S") {
     const seg = PL.segAtTime(state.session.notes, t);
     if (seg) {

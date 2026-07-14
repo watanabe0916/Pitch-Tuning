@@ -35,12 +35,11 @@ button:not(:disabled):hover { background: #3a4150; }
 .hintbar b { color: #cdd2da; }
 
 .editor { position: relative; flex: 1; display: flex; overflow: hidden; min-height: 0; }
-/* canvas をラッパで absolute 配置し、canvas の固有アスペクト比が
-   flex レイアウトの幅計算を乗っ取る問題を回避する。 */
-.keyswrap { flex: 0 0 56px; position: relative; background: #1e2127; }
-.gridwrap { flex: 1 1 0; min-width: 0; position: relative; background: #15171c; }
-.keyswrap canvas, .gridwrap canvas {
-  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
-}
-#grid { cursor: crosshair; }
+/* 鍵盤列は固定幅。canvas をラッパに absolute 配置し、canvas 固有アスペクト比が
+   flex 幅計算を乗っ取る問題を回避する。横スクロールしても鍵盤は常に見える。 */
+.keyswrap { flex: 0 0 56px; position: relative; background: #1e2127; z-index: 2; }
+.keyswrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* グリッドは横スクロール可能なコンテナ。canvas 幅は JS が内容幅に設定する。 */
+.gridwrap { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; background: #15171c; }
+#grid { display: block; height: 100%; cursor: crosshair; }
 #grid.locked { cursor: not-allowed; }

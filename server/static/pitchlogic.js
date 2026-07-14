@@ -19,8 +19,14 @@
     return NOTE_NAMES[((midi % 12) + 12) % 12] + (Math.floor(midi / 12) - 1);
   };
 
-  // 音高スナップ: 既定 50cent、Shift=1cent(微調整)、Alt=100cent(粗)（F-1）。
-  function snapStep(mods) { return mods && mods.shift ? 1 : (mods && mods.alt ? 100 : 50); }
+  // 音高スナップ（F-1）: 既定 50cent、Shift=1cent(微調整)、Alt=100cent(粗)。
+  const FINE_SNAP_CENTS = 1;
+
+  function snapStep(mods) {
+    if (mods && mods.shift) return FINE_SNAP_CENTS;
+    if (mods && mods.alt) return 100;
+    return 50;
+  }
   function snapCents(cents, mods) {
     const step = snapStep(mods);
     return Math.round(cents / step) * step;
@@ -127,9 +133,9 @@
   }
 
   return { A4_CENTS, hzToCents, centsToHz, isBlackKey, centsToName,
-           snapStep, snapCents, computeDragOffset, segAtTime, offsetAtTime,
-           pitchRange, makeTransforms,
+           snapStep, snapCents, computeDragOffset,
+           segAtTime, offsetAtTime, pitchRange, makeTransforms,
            newId, gainFillFraction, fillFractionToGainDb,
-           GAIN_FILL_MAX_DB, GAIN_FILL_MIN_DB,
+           GAIN_FILL_MAX_DB, GAIN_FILL_MIN_DB, FINE_SNAP_CENTS,
            splitNote, mergeNote, moveDivider };
 });
