@@ -26,8 +26,10 @@ const state = {
   gKey: false,          // G キー押下中（音量ツール）
   aKey: false,          // A キー押下中（追加選択モード）
   rec: null,            // 録音中の状態 {active, stream, ctx, chunks, peak, meterRAF}
-  audio: { ctx: null, buffer: null, source: null, playing: false,
-           backingSrc: null, vocalGain: null, backingGain: null, startAt: 0 },
+  audio: {
+    ctx: null, buffer: null, source: null, playing: false,
+    backingSrc: null, vocalGain: null, backingGain: null, startAt: 0
+  },
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
   dirty: false,         // 未再合成の編集があるか
 };
@@ -467,7 +469,7 @@ els.grid.addEventListener("mousedown", (e) => {
     const ns = state.selection.slice();
     if (idx >= 0) ns.splice(idx, 1); else ns.push(hit.seg);
     setSelection(ns);
-    setStatus(ns.length + " 本を選択中");
+    setStatus(ns.length + " ノートを選択中");
     draw();
     return;
   }
@@ -475,8 +477,10 @@ els.grid.addEventListener("mousedown", (e) => {
   if (hit.kind === "divider") {
     const seg = hit.note.segments[hit.bi];
     if (e.ctrlKey || e.metaKey) {
-      state.drag = { mode: "transition", seg, startX: e.clientX,
-                     startTrans: seg.transitionInMs || 40 };
+      state.drag = {
+        mode: "transition", seg, startX: e.clientX,
+        startTrans: seg.transitionInMs || 40
+      };
     } else {
       state.drag = { mode: "divider", note: hit.note, bi: hit.bi };
     }
@@ -487,12 +491,16 @@ els.grid.addEventListener("mousedown", (e) => {
     if (!inSel) setSelection([hit.seg]);
     if (state.gKey) {
       // G+縦ドラッグ = 音量（選択全バーに同じ差分を適用）
-      state.drag = { mode: "gain", seg: hit.seg, startY: e.clientY,
-                     group: group.map((s) => ({ seg: s, start: s.gainDb })) };
+      state.drag = {
+        mode: "gain", seg: hit.seg, startY: e.clientY,
+        group: group.map((s) => ({ seg: s, start: s.gainDb }))
+      };
     } else {
       // 縦ドラッグ = 音高（選択全バーに同じ差分を適用）
-      state.drag = { mode: "pitch", seg: hit.seg, startY: e.clientY,
-                     group: group.map((s) => ({ seg: s, start: s.pitchOffsetCents })) };
+      state.drag = {
+        mode: "pitch", seg: hit.seg, startY: e.clientY,
+        group: group.map((s) => ({ seg: s, start: s.pitchOffsetCents }))
+      };
     }
   }
   state.drag.moved = false;
@@ -525,7 +533,7 @@ function copySelection() {
     segs.sort((a, b) => a.startSec - b.startSec);
     state.clipboard.push({ segments: segs.map((s) => Object.assign({}, s)) });
   }
-  setStatus(state.selection.length + " 本をコピー（貼りたい音程にカーソルを置いて Cmd/Ctrl+V）");
+  setStatus(state.selection.length + " ノートをコピー（貼りたい音程にカーソルを置いて Cmd/Ctrl+V）");
 }
 
 // ペースト: コピーしたバーを **別ボイス（ハモリ）** として複製する。
@@ -542,19 +550,23 @@ function pasteClipboard() {
   const shift = Math.round((cursorCents - anchorCents) / 50) * 50;   // 50cent スナップ
 
   const voice = nextVoiceId();
+  const newSel = [];
   for (const cn of state.clipboard) {
     // 各クリップボード項目（＝元の1ノート）を独立した新ノートとして追加する。
     // voice は同じでも state.session.notes 上は別ノートなので、個別に選択・編集できる。
-    const note = { id: PL.newId(), voice, segments: cn.segments.map((s) => Object.assign({}, s, {
-      id: PL.newId(), pitchOffsetCents: s.pitchOffsetCents + shift,
-    })) };
+    const note = {
+      id: PL.newId(), voice, segments: cn.segments.map((s) => Object.assign({}, s, {
+        id: PL.newId(), pitchOffsetCents: s.pitchOffsetCents + shift,
+      }))
+    };
     state.session.notes.push(note);
+    for (const s of note.segments) newSel.push(s);
   }
-  // 貼り付け後は選択を空にする。これで各ハモリノートを個別にクリックして
-  // 単独で動かせる（全選択のまま残すと、1本クリックで全部が一緒に動いてしまう）。
-  setSelection([]);
+  // 貼り付けたバーは選択したまま残す。選択中のバーをクリック＝まとめて操作、
+  // 他のバーや空き領域をクリック＝この複数選択は解除（クリック処理側で自動的に）。
+  setSelection(newSel);
   commitEdit(true);
-  setStatus("ハモリを配置（各ノートは個別にクリックして編集できます）");
+  setStatus(newSel.length + " ノートを配置（選択中。まとめて操作でき、他をクリックで解除）");
 }
 
 function nextVoiceId() {
@@ -639,7 +651,7 @@ function endDrag() {
         state.session.notes, v.xToTime(d.x0), v.xToTime(d.x1),
         v.yToCents(d.y0), v.yToCents(d.y1));
       setSelection(sel);
-      setStatus(sel.length + " 本のバーを選択");
+      setStatus(sel.length + " ノートのバーを選択");
     }
     draw();
     return;   // 選択は編集ではないので再合成しない
@@ -765,8 +777,10 @@ gridwrap().addEventListener("wheel", (e) => {
 // プロジェクト保存: EditState を JSON でダウンロード（音声は含まない・13.4）
 els.projsave.addEventListener("click", () => {
   if (!state.session) return;
-  const proj = { version: 1, fileName: state.session.fileName || "vocal",
-                 durationSec: state.session.durationSec, editState: buildEditState() };
+  const proj = {
+    version: 1, fileName: state.session.fileName || "vocal",
+    durationSec: state.session.durationSec, editState: buildEditState()
+  };
   const blob = new Blob([JSON.stringify(proj, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement("a"),
@@ -992,8 +1006,8 @@ async function stopRecording() {
   cancelAnimationFrame(r.meterRAF);
   const samples = RL.concatFloat32(r.chunks);
   const sr = r.ctx.sampleRate;         // 11.3: 実際の SR を使う
-  try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
-  try { await r.ctx.close(); } catch (_) {}
+  try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) { }
+  try { await r.ctx.close(); } catch (_) { }
   state.rec = null;
   els.record.classList.remove("on"); els.record.textContent = "● 録音";
   els.meter.hidden = true;
@@ -1069,8 +1083,10 @@ async function renderAndLoad(autoplay) {
   try {
     const res = await fetch("/api/render", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId: state.session.sessionId,
-                             editState: buildEditState(), mode: "preview" }),
+      body: JSON.stringify({
+        sessionId: state.session.sessionId,
+        editState: buildEditState(), mode: "preview"
+      }),
     });
     if (!res.ok) throw new Error(await res.text());
     const arr = await res.arrayBuffer();
@@ -1121,7 +1137,7 @@ function playAudio() {
   vsrc.onended = () => { if (a.source === vsrc) stopAudio(); };
   vsrc.start(sched.vocalStart, sched.vocalOffset);
   if (bsrc) bsrc.start(Math.max(ctx.currentTime, sched.backingStart),
-                       Math.max(0, sched.backingOffset));
+    Math.max(0, sched.backingOffset));
 
   a.source = vsrc; a.backingSrc = bsrc; a.playing = true; a.startAt = t0;
   setTransportPlaying(true);
@@ -1131,7 +1147,7 @@ function playAudio() {
 function stopAudio() {
   const a = state.audio;
   for (const s of [a.source, a.backingSrc]) {
-    if (s) { try { s.onended = null; s.stop(); } catch (_) {} }
+    if (s) { try { s.onended = null; s.stop(); } catch (_) { } }
   }
   a.source = a.backingSrc = null;
   a.playing = false;
