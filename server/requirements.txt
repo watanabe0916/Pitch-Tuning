@@ -5,6 +5,8 @@ scipy
 matplotlib
 soundfile      # 音声入出力 (libsndfile)
 pyworld        # WORLD: F0 推定(Harvest) + 再合成(cheaptrick/d4c/synthesize)
+setuptools<81  # pyworld が実行時に pkg_resources を import する。setuptools 81 で pkg_resources が
+               # 削除されたため 80 系に固定（Python3.12 の venv には setuptools 自体が既定で入らない）
 
 # Phase 3: API サーバー
 fastapi

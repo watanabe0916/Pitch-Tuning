@@ -11,19 +11,37 @@ CLAUDE.md の仕様に基づく実装。
 - **Phase 8**: リバーブ・マスターフェーダー・アンドゥ・ズーム・プロジェクト保存（AC-9/10）
 - **Phase 9**: フレーズ自動分割（長尺対応）— 無音でのみ分割・フレーズ単位で解析/再合成キャッシュ
 
-## セットアップ
+## クイックスタート（フォークした人向け・推奨）
 
-conda の classic solver が非常に遅いため、パッケージは **pip** で導入する。
-F0 推定は当初 librosa(pyin) を想定していたが、依存の numba/llvmlite が LLVM ビルドを
-要して重いため、**WORLD Harvest** に一本化した（`pyworld` は Phase 2 の再合成でも使う）。
+**conda は不要。** Python 3.9+ さえあれば、リポジトリ直下で次の2ステップだけで動く。
+
+```bash
+./setup.sh        # 初回のみ: .venv を作り依存を pip で入れる（数分）
+./start.command   # 起動: サーバー → ブラウザ(http://localhost:8000/) が開く
+```
+
+- macOS では Finder で **`start.command` をダブルクリック**するだけでもよい
+  （`.venv` が無ければ自動で `setup.sh` を走らせる）。
+- 必要なもの: **Python 3.9 以上**（無ければ https://www.python.org/downloads/ ）。
+  `pyworld` は C 拡張だが、多くの環境で **ビルド済み wheel** が入る。ソースビルドになる場合のみ
+  Xcode Command Line Tools（mac）や build-essential（Linux）が必要。
+- Windows/Linux は `.command` の代わりに `source .venv/bin/activate && cd server && uvicorn app:app --port 8000`。
+
+> 補足: F0 推定は当初 librosa(pyin) を想定していたが、依存の numba/llvmlite が LLVM ビルドを
+> 要して重いため、**WORLD Harvest** に一本化した（`pyworld` は Phase 2 の再合成でも使う）。
+> `setuptools<81` を固定しているのは、pyworld が実行時に `pkg_resources` を import するため
+> （setuptools 81 で削除された。Python 3.12 の venv には setuptools 自体が既定で入らない）。
+
+### （旧）conda を使う場合
+
+以前は conda env で開発していた。conda の classic solver は非常に遅いのでパッケージは pip で入れる。
+conda 固有の機能は使っておらず、上の venv 版と等価。
 
 ```bash
 conda create -y -n pitch python=3.10
 conda activate pitch
-pip install -r server/requirements.txt   # numpy scipy matplotlib soundfile pyworld
+pip install -r server/requirements.txt
 ```
-
-`pyworld` は clang でソースビルドされる（Xcode Command Line Tools が必要）。
 
 ## Phase 1 の実行
 
