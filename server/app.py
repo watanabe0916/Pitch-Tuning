@@ -98,8 +98,8 @@ def _render_vocal(sess: Session, es: dict, normalize: bool = False) -> np.ndarra
     """EditState からボーカル最終波形を得る（プレビュー・書き出しで共有）。"""
     notes = notes_from_json(es.get("notes", []))
     master_gain_db = float(es.get("masterGainDb", 0.0))
-    return render_master(sess.analysis, notes,
-                         master_gain_db=master_gain_db, normalize=normalize)
+    return render_master(sess.analysis, notes, master_gain_db=master_gain_db,
+                         reverb=es.get("reverb"), normalize=normalize)
 
 
 @app.post("/api/render")
@@ -149,7 +149,8 @@ def export(req: ExportRequest):
         # ミックス: ボーカル（リミッター前）+ 伴奏 → 加算 → 出力段でリミッター（13.2）。
         notes = notes_from_json(es.get("notes", []))
         vocal = render_output(sess.analysis, notes,
-                              master_gain_db=float(es.get("masterGainDb", 0.0)))
+                              master_gain_db=float(es.get("masterGainDb", 0.0)),
+                              reverb=es.get("reverb"))
         b = es.get("backing", {}) or {}
         y = mix_vocal_backing(
             vocal, sess.backing.pcm, float(b.get("offsetSec", 0.0)), sr,

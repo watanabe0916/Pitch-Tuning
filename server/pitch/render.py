@@ -312,17 +312,54 @@ def synthesize(analysis: Analysis, out_f0: np.ndarray) -> np.ndarray:
     return np.asarray(y, dtype=np.float64)
 
 
-def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0) -> np.ndarray:
-    """編集後のボーカル波形を生成する（Phase 2 の信号チェーン）。
+def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
+                   predelay_sec: float = 0.0) -> np.ndarray:
+    """指数減衰ノイズによる合成インパルス応答（アルゴリズミック・リバーブ相当）。
 
-    renderF0 → synthesize → renderGain（リバーブ前段）→ マスターゲイン。
-    リバーブ・リミッターは Phase 5/8 で後段に追加する。
+    decay_sec 後に -60dB へ落ちる。畳み込みで残響を付ける（14章 Freeverb 相当の代替）。
+    決定的にするため固定シードを使う（プレビューと書き出しで同一結果）。
+    """
+    n = max(1, int(decay_sec * sample_rate))
+    t = np.arange(n) / sample_rate
+    rng = np.random.default_rng(1234)                # 決定的
+    ir = rng.standard_normal(n) * np.exp(-6.9077 * t / decay_sec)   # -60dB@decay
+    pre = max(0, int(predelay_sec * sample_rate))
+    if pre:
+        ir = np.concatenate([np.zeros(pre), ir])
+    ir /= np.sqrt(np.sum(ir ** 2)) + 1e-12           # エネルギー正規化
+    return ir
+
+
+def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
+    """畳み込みリバーブ。mix(0..1) で dry/wet を混ぜる。残響の尾は出力長に含める。"""
+    if not reverb:
+        return x
+    mix = float(reverb.get("mix", 0.0))
+    if mix <= 0.0:
+        return x
+    from scipy.signal import fftconvolve
+    decay = float(reverb.get("decaySec", 1.2))
+    ir = make_reverb_ir(sample_rate, decay)
+    wet = fftconvolve(x, ir)                          # len = len(x)+len(ir)-1（尾を含む）
+    out = np.zeros(len(wet), dtype=np.float64)
+    out[: len(x)] += (1.0 - mix) * x                 # dry
+    out += mix * wet                                 # wet（残響の尾まで）
+    return out
+
+
+def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0,
+                  reverb: dict = None) -> np.ndarray:
+    """編集後のボーカル波形を生成する（信号チェーン 4.2、リミッター前まで）。
+
+    renderF0 → synthesize → renderGain（★リバーブ前段）→ リバーブ → マスターゲイン。
+    セグメントゲインは必ずリバーブより前（AC-10）。マスターゲインはリバーブより後（4.2）。
     """
     out_f0 = render_f0(analysis, notes)
     y = synthesize(analysis, out_f0)
     gain_lin = render_gain(analysis, notes, len(y))
-    y = y * gain_lin                              # セグメントゲイン（リバーブ前）
-    y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン
+    y = y * gain_lin                              # セグメントゲイン（★リバーブ前）
+    y = apply_reverb(y, analysis.sample_rate, reverb)   # リバーブ
+    y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン（リバーブ後）
     return y
 
 
@@ -408,17 +445,16 @@ def mix_vocal_backing(vocal: np.ndarray, backing: np.ndarray, offset_sec: float,
 
 
 def render_master(analysis: Analysis, notes, master_gain_db: float = 0.0,
+                  reverb: dict = None,
                   ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
                   normalize: bool = False) -> np.ndarray:
     """出力段まで通した最終ボーカル波形。**プレビューと書き出しで共有する**。
 
-    render_output（リバーブは Phase 8）→ トゥルーピーク処理。
-    normalize=False: 天井超過時のみ抑える（リミッター）。
-    normalize=True : 天井ちょうどへ正規化。
+    render_output（gain→リバーブ→master）→ トゥルーピーク処理（リミッター/正規化）。
     プレビュー(/api/render)と書き出し(/api/export, target=vocal)は同一の
     引数でこの関数を呼ぶため、既定条件で出力がサンプル単位で一致する（AC-16）。
     """
-    y = render_output(analysis, notes, master_gain_db)
+    y = render_output(analysis, notes, master_gain_db, reverb=reverb)
     if normalize:
         return normalize_true_peak(y, ceiling_dbtp)
     return true_peak_limit(y, ceiling_dbtp)

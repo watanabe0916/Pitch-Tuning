@@ -17,6 +17,8 @@ const state = {
   drag: null,           // 進行中のドラッグ {mode, ...}
   selected: null,       // 選択中セグメント（補正スライダー/M の対象）
   master: 0.0,          // masterGainDb
+  reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
+  pxPerSec: 260,        // 横ズーム率
   mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
   rec: null,            // 録音中の状態 {active, stream, ctx, chunks, peak, meterRAF}
@@ -56,15 +58,22 @@ const els = {
   meter: document.getElementById("meter"),
   meterbar: document.getElementById("meterbar"),
   meterlabel: document.getElementById("meterlabel"),
+  reverb: document.getElementById("reverb"),
+  reverbval: document.getElementById("reverbval"),
+  undo: document.getElementById("undo"),
+  redo: document.getElementById("redo"),
+  zoomin: document.getElementById("zoomin"),
+  zoomout: document.getElementById("zoomout"),
+  projfile: document.getElementById("projfile"),
+  projsave: document.getElementById("projsave"),
 };
 
 const RL = window.RecLogic;
 
 const setStatus = (msg) => { els.status.textContent = msg; };
 
-// 横方向のズーム率。内容幅 = 秒数 × PX_PER_SEC（最低でもビューポート幅を満たす）。
+// 横方向のズーム率。内容幅 = 秒数 × pxPerSec（最低でもビューポート幅を満たす）。
 // これにより長い音声は横スクロールになり、鍵盤列は固定のまま常に見える。
-const PX_PER_SEC = 260;
 const MAX_CANVAS_PX = 30000;   // canvas 幅の上限（描画バッファの安全域）
 
 const gridwrap = () => els.grid.parentElement;
@@ -75,7 +84,7 @@ function layout() {
   const gw = gridwrap();
   const viewH = gw.clientHeight;
   const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
-  let contentW = Math.max(gw.clientWidth, dur * PX_PER_SEC);
+  let contentW = Math.max(gw.clientWidth, dur * state.pxPerSec);
   contentW = Math.min(contentW, MAX_CANVAS_PX);
   return { contentW, viewH };
 }
@@ -340,9 +349,58 @@ function hitTest(px, t) {
 
 function commitEdit(changed) {
   if (!changed) return;
+  pushUndo();             // commitEdit は全編集の合流点。ここで直前状態を undo へ。
   state.dirty = true;
   draw();
   renderAndLoad(false);   // 再合成して準備（自動再生はしない）
+}
+
+// --- アンドゥ/リドゥ（EditState スナップショット・6.2） ---
+let undoStack = [], redoStack = [], lastSnap = null;
+function snapshotState() {
+  return JSON.stringify({ notes: state.session.notes, master: state.master, reverb: state.reverb });
+}
+function initUndo() { undoStack = []; redoStack = []; lastSnap = snapshotState(); updateUndoButtons(); }
+function pushUndo() {
+  if (lastSnap !== null) {
+    undoStack.push(lastSnap);
+    if (undoStack.length > 100) undoStack.shift();
+    redoStack.length = 0;
+  }
+  lastSnap = snapshotState();   // commitEdit 後の新状態
+  updateUndoButtons();
+}
+function applySnapshot(snap) {
+  const o = JSON.parse(snap);
+  state.session.notes = o.notes;
+  state.master = o.master;
+  state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
+  state.selected = null;
+  // UI 同期
+  els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
+  els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
+  syncSliders();
+  state.dirty = true;
+  draw();
+  renderAndLoad(false);
+}
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(lastSnap);
+  lastSnap = undoStack.pop();
+  applySnapshot(lastSnap);
+  updateUndoButtons();
+}
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(lastSnap);
+  lastSnap = redoStack.pop();
+  applySnapshot(lastSnap);
+  updateUndoButtons();
+}
+function updateUndoButtons() {
+  els.undo.disabled = !undoStack.length;
+  els.redo.disabled = !redoStack.length;
 }
 
 els.grid.addEventListener("mousedown", (e) => {
@@ -441,8 +499,17 @@ els.grid.addEventListener("dblclick", (e) => {
   }
 });
 
-// キーボード: S=分割 / M=ミュート / G=音量ツール（押下中）
+// キーボード: S=分割 / M=ミュート / G=音量ツール（押下中）/ Cmd|Ctrl+Z=アンドゥ
 window.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+    e.preventDefault();
+    if (!state.session || state.audio.playing) return;
+    e.shiftKey ? redo() : undo();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "y" || e.key === "Y")) {
+    e.preventDefault(); if (state.session && !state.audio.playing) redo(); return;
+  }
   if (state.drag) updateSnapLabel(e);
   if (e.key === "g" || e.key === "G") state.gKey = true;
   if (!state.session || state.audio.playing || !state.view) return;
@@ -482,6 +549,60 @@ els.master.addEventListener("input", () => {
   els.masterval.textContent = state.master.toFixed(1) + "dB";
 });
 els.master.addEventListener("change", () => commitEdit(true));
+els.reverb.addEventListener("input", () => {
+  state.reverb.mix = parseFloat(els.reverb.value);
+  els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
+});
+els.reverb.addEventListener("change", () => commitEdit(true));
+
+// --- アンドゥ/リドゥ・ズーム・プロジェクト保存/読込 ---
+els.undo.addEventListener("click", undo);
+els.redo.addEventListener("click", redo);
+
+function zoomBy(factor) {
+  if (!state.session) return;
+  state.pxPerSec = Math.max(40, Math.min(2000, state.pxPerSec * factor));
+  resizeCanvases(); draw();
+}
+els.zoomin.addEventListener("click", () => zoomBy(1.4));
+els.zoomout.addEventListener("click", () => zoomBy(1 / 1.4));
+// Cmd/Ctrl + ホイールで拡大縮小
+gridwrap().addEventListener("wheel", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || !state.session) return;
+  e.preventDefault();
+  zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+}, { passive: false });
+
+// プロジェクト保存: EditState を JSON でダウンロード（音声は含まない・13.4）
+els.projsave.addEventListener("click", () => {
+  if (!state.session) return;
+  const proj = { version: 1, fileName: state.session.fileName || "vocal",
+                 durationSec: state.session.durationSec, editState: buildEditState() };
+  const blob = new Blob([JSON.stringify(proj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"),
+    { href: url, download: (proj.fileName) + "_project.json" });
+  document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  setStatus("プロジェクトを保存しました");
+});
+// プロジェクト読込: JSON を現在のセッションへ適用（同じ音声を先に読み込んでおく）
+els.projfile.addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f || !state.session) { setStatus("先に音声を読み込んでください"); return; }
+  try {
+    const proj = JSON.parse(await f.text());
+    const es = proj.editState || {};
+    state.session.notes = es.notes || state.session.notes;
+    state.master = es.masterGainDb || 0;
+    state.reverb = es.reverb || { mix: 0, decaySec: 1.2 };
+    els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
+    els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
+    state.selected = null; syncSliders();
+    initUndo(); draw(); state.dirty = true; renderAndLoad(false);
+    setStatus("プロジェクトを読み込みました");
+  } catch (err) { setStatus("プロジェクト読込エラー: " + err.message); }
+  els.projfile.value = "";
+});
 
 // ==========================================================================
 // /api/session, /api/render
@@ -513,6 +634,8 @@ els.file.addEventListener("change", async (e) => {
     setStatus(`${j.durationSec.toFixed(2)}s / ${j.sampleRate}Hz / ${j.notes.length}ノート ${nSeg}セグメント`);
     els.export.disabled = false;
     els.bfile.disabled = false;   // 伴奏追加を有効化
+    els.zoomin.disabled = els.zoomout.disabled = els.projsave.disabled = false;
+    initUndo();                   // アンドゥ履歴を初期化
     await renderAndLoad(false);   // 初期プレビューを用意
   } catch (err) {
     setStatus("エラー: " + err.message);
@@ -521,6 +644,7 @@ els.file.addEventListener("change", async (e) => {
 
 function buildEditState() {
   const es = { notes: state.session.notes, masterGainDb: state.master };
+  if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
   if (state.backing) es.backing = {
     offsetSec: state.backing.offsetSec, gainDb: state.backing.gainDb,
     mute: state.backing.mute, solo: state.backing.solo,
@@ -824,7 +948,10 @@ function setTransportPlaying(playing) {
   els.stop.disabled = !playing;
   els.master.disabled = playing;
   els.strength.disabled = playing || !state.selected;
+  els.reverb.disabled = playing;
   els.export.disabled = playing || !state.session;
+  els.projfile.disabled = playing;
+  if (playing) { els.undo.disabled = els.redo.disabled = true; } else { updateUndoButtons(); }
   const hasBacking = !!state.backing;
   for (const el of [els.bvol, els.bmute, els.bsolo, els.boffset, els.bremove])
     el.disabled = playing || !hasBacking;

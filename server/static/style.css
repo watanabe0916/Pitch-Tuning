@@ -47,6 +47,8 @@ button:not(:disabled):hover { background: #3a4150; }
 
 .filebtn.alt { background: #4a5568; }
 .filebtn.alt:hover { background: #55647a; }
+.filebtn.alt2 { background: #3a4150; font-size: 12px; padding: 6px 10px; }
+.filebtn.alt2:hover { background: #454d5e; }
 
 .editor { position: relative; flex: 1; display: flex; overflow: hidden; min-height: 0; }
 /* 鍵盤列は固定幅。canvas をラッパに absolute 配置し、canvas 固有アスペクト比が

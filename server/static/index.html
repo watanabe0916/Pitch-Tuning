@@ -23,6 +23,14 @@
     <span class="sep"></span>
     <label class="slider">Master <input id="master" type="range" min="-24" max="6" step="0.5" value="0" /><span id="masterval">0dB</span></label>
     <label class="slider">補正 <input id="strength" type="range" min="0" max="1" step="0.05" value="0" disabled /><span id="strengthval">–</span></label>
+    <label class="slider">残響 <input id="reverb" type="range" min="0" max="1" step="0.05" value="0" /><span id="reverbval">0%</span></label>
+    <span class="sep"></span>
+    <button id="undo" title="元に戻す (Cmd/Ctrl+Z)" disabled>↶</button>
+    <button id="redo" title="やり直し (Cmd/Ctrl+Shift+Z)" disabled>↷</button>
+    <button id="zoomout" title="縮小" disabled>－</button>
+    <button id="zoomin" title="拡大" disabled>＋</button>
+    <label class="filebtn alt2">プロジェクト読込<input id="projfile" type="file" accept=".json" hidden /></label>
+    <button id="projsave" title="プロジェクト保存" disabled>保存</button>
     <span class="sep"></span>
     <label class="slider">形式
       <select id="fmt">
