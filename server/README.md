@@ -5,6 +5,7 @@ CLAUDE.md の仕様に基づく実装。
 - **Phase 2**: renderF0/renderGain + WORLD 再合成（AC-1〜5/7/8）
 - **Phase 3**: Web UI（Canvas ピアノロール・縦ドラッグ・50cent スナップ）+ `/api/session`・`/api/render`
 - **Phase 4**: 分割/結合/遷移区間/セグメント音量の UI（AC-6、遷移帯・塗り高さの可視化）
+- **Phase 5**: 書き出し（`/api/export`）+ ダウンロード UI + トゥルーピーク・リミッター（AC-15/16/21）
 
 ## セットアップ
 
@@ -174,7 +175,31 @@ server/
 master(-3dB) を含む EditState を `/api/render` に投げ、出力の分割各半が
 ±200/-100cent、ミュート区間が -91dB（無音）になることを確認済み。
 
-## 次のステップ（Phase 5）
+## Phase 5: 書き出し + リミッター
 
-書き出し（`/api/export`）+ ダウンロード UI + トゥルーピーク・リミッター
-（AC-15, AC-16, AC-21）。プレビューと書き出しのチェーン共有で不整合を防ぐ。
+- `render_master()`（[render.py](server/pitch/render.py)）= `render_output` +
+  **トゥルーピーク・リミッター**（4倍オーバーサンプルで -1 dBTP を超えないよう抑制）。
+  `normalize=True` で -1 dBTP へ正規化。
+- **プレビュー(`/api/render`)と書き出し(`/api/export`)は同一の `render_master` を通す**ため、
+  既定条件で出力がサンプル単位で一致する（AC-16）。プレビューは 32bit float WAV。
+- `POST /api/export`: `target`(vocal/mix)・`format`(wav/flac/mp3)・`bitDepth`・`normalize`。
+  `Content-Disposition: attachment` でダウンロード。ファイル名は `<原名>_tuned_<日時>.<ext>`。
+  伴奏ミックス(target=mix)は Phase 6 で対応。
+- UI: 形式選択 + -1dBTP正規化チェック + 「⬇ 書き出し」ボタン → ブラウザ保存（13.3）。
+
+### Phase 5 検証（AC 実測）
+
+| AC | 内容 | 実測 |
+|----|------|------|
+| AC-15 | Content-Disposition でファイル保存できる | `attachment; filename="..._tuned_....wav"` ✅ |
+| AC-16 | 既定書き出し = プレビュー（サンプル一致）| `array_equal == True`（maxdiff 0.0）✅ |
+| AC-21 | +12dB でも -1 dBTP を超えない | 真ピーク **-1.000 dBTP** ✅ |
+
+```bash
+python -m pytest tests/test_phase5.py -v      # AC-15/16/21
+```
+
+## 次のステップ（Phase 6）
+
+伴奏（バッキング）トラックのアップロード・同時再生・再生中の編集ロック
+（`/api/backing`、AC-17〜20）。`target="mix"` の書き出しもここで完成させる。

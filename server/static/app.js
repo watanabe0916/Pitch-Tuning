@@ -36,6 +36,9 @@ const els = {
   masterval: document.getElementById("masterval"),
   strength: document.getElementById("strength"),
   strengthval: document.getElementById("strengthval"),
+  fmt: document.getElementById("fmt"),
+  normalize: document.getElementById("normalize"),
+  export: document.getElementById("export"),
 };
 
 const setStatus = (msg) => { els.status.textContent = msg; };
@@ -488,6 +491,7 @@ els.file.addEventListener("change", async (e) => {
     resizeCanvases(); draw();
     const nSeg = j.notes.reduce((a, n) => a + n.segments.length, 0);
     setStatus(`${j.durationSec.toFixed(2)}s / ${j.sampleRate}Hz / ${j.notes.length}ノート ${nSeg}セグメント`);
+    els.export.disabled = false;
     await renderAndLoad(false);   // 初期プレビューを用意
   } catch (err) {
     setStatus("エラー: " + err.message);
@@ -497,6 +501,46 @@ els.file.addEventListener("change", async (e) => {
 function buildEditState() {
   return { notes: state.session.notes, masterGainDb: state.master };
 }
+
+// ==========================================================================
+// 書き出し（/api/export）+ ダウンロード（13.3）
+// ==========================================================================
+async function exportAudio() {
+  if (!state.session) return;
+  if (state.audio.playing) stopAudio();
+  const fmt = els.fmt.value;
+  setStatus("書き出し中…");
+  els.export.disabled = true;
+  try {
+    const res = await fetch("/api/export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: state.session.sessionId,
+        editState: buildEditState(),
+        target: "vocal",              // 伴奏ミックスは Phase 6
+        format: fmt,
+        bitDepth: fmt === "mp3" ? 16 : 24,
+        mp3Bitrate: 256,
+        normalize: els.normalize.checked,
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const name = m ? m[1] : `vocal_tuned.${fmt}`;
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);          // 必ず解放（メモリリーク防止）
+    setStatus("書き出し完了: " + name);
+  } catch (err) {
+    setStatus("書き出しエラー: " + err.message);
+  } finally {
+    els.export.disabled = false;
+  }
+}
+els.export.addEventListener("click", exportAudio);
 
 let renderSeq = 0;
 async function renderAndLoad(autoplay) {

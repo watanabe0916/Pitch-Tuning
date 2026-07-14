@@ -11,6 +11,10 @@ fastapi
 uvicorn[standard]
 python-multipart  # multipart/form-data（音声アップロード）
 
+# テスト（任意）
+pytest
+httpx             # FastAPI TestClient 用
+
 # 備考: F0 推定は当初 librosa(pyin) を想定していたが、依存の numba/llvmlite が
 # LLVM ビルドを要し導入が重いため、WORLD Harvest に一本化した。Phase 2 の
 # 再合成と同じ基盤で扱える利点もある。torchcrepe 等へ差し替える場合は

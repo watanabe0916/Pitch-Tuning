@@ -324,3 +324,70 @@ def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0) -> np.
     y = y * gain_lin                              # セグメントゲイン（リバーブ前）
     y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン
     return y
+
+
+# --------------------------------------------------------------------------
+# トゥルーピーク・リミッター / マスター段（4.2 / 13.2）
+# --------------------------------------------------------------------------
+
+DEFAULT_CEILING_DBTP = -1.0
+
+
+def true_peak_db(x: np.ndarray, oversample: int = 4) -> float:
+    """トゥルーピーク [dBTP]。4倍オーバーサンプルしてサンプル間ピークを捉える。"""
+    from scipy.signal import resample_poly
+    if len(x) == 0:
+        return -np.inf
+    up = resample_poly(x, oversample, 1)
+    peak = float(np.max(np.abs(up)))
+    return 20.0 * np.log10(peak + 1e-12)
+
+
+def true_peak_limit(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
+                    oversample: int = 4) -> np.ndarray:
+    """トゥルーピークが天井を超える場合のみ全体を減衰させる（4.2 のリミッター）。
+
+    +12dB までブースト可能な仕様のため出力段で必須。これがないとクリップする。
+    既定値で天井から十分低いときはオーバーサンプルを省いて高速化する
+    （プレビューと書き出しで同一判定になるよう決定的に実装）。
+    """
+    ceil_lin = 10.0 ** (ceiling_dbtp / 20.0)
+    sample_peak = float(np.max(np.abs(x))) + 1e-12 if len(x) else 0.0
+    # サンプルピークが天井より 1dB 以上低ければ、トゥルーピークも超えない前提で省略。
+    if 20.0 * np.log10(sample_peak) < ceiling_dbtp - 1.0:
+        return x
+    from scipy.signal import resample_poly
+    up = resample_poly(x, oversample, 1)
+    tp = float(np.max(np.abs(up))) + 1e-12
+    if tp > ceil_lin:
+        return x * (ceil_lin / tp)
+    return x
+
+
+def normalize_true_peak(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
+                        oversample: int = 4) -> np.ndarray:
+    """トゥルーピークが天井ちょうどになるよう全体をスケールする（normalize=true 用）。"""
+    from scipy.signal import resample_poly
+    if len(x) == 0:
+        return x
+    up = resample_poly(x, oversample, 1)
+    tp = float(np.max(np.abs(up))) + 1e-12
+    ceil_lin = 10.0 ** (ceiling_dbtp / 20.0)
+    return x * (ceil_lin / tp)
+
+
+def render_master(analysis: Analysis, notes, master_gain_db: float = 0.0,
+                  ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
+                  normalize: bool = False) -> np.ndarray:
+    """出力段まで通した最終ボーカル波形。**プレビューと書き出しで共有する**。
+
+    render_output（リバーブは Phase 8）→ トゥルーピーク処理。
+    normalize=False: 天井超過時のみ抑える（リミッター）。
+    normalize=True : 天井ちょうどへ正規化。
+    プレビュー(/api/render)と書き出し(/api/export, target=vocal)は同一の
+    引数でこの関数を呼ぶため、既定条件で出力がサンプル単位で一致する（AC-16）。
+    """
+    y = render_output(analysis, notes, master_gain_db)
+    if normalize:
+        return normalize_true_peak(y, ceiling_dbtp)
+    return true_peak_limit(y, ceiling_dbtp)

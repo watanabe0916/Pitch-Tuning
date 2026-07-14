@@ -26,6 +26,10 @@ button:not(:disabled):hover { background: #3a4150; }
 .slider { font-size: 12px; color: #9aa0aa; display: flex; align-items: center; gap: 6px; }
 .slider input[type=range] { width: 90px; }
 .slider span { min-width: 34px; color: #cdd2da; }
+.slider select { background: #2f3540; color: #e6e8ec; border: 1px solid #444; border-radius: 4px; padding: 3px 6px; }
+.chk { font-size: 12px; color: #9aa0aa; display: flex; align-items: center; gap: 4px; }
+#export { background: #3a6ea5; }
+#export:not(:disabled):hover { background: #4a7eb5; }
 #snap { color: #6cc06c; font-weight: 600; }
 .status { margin-left: auto; font-size: 12px; color: #9aa0aa; }
 .hintbar {
