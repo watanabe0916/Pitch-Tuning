@@ -27,10 +27,19 @@ from pydantic import BaseModel
 from pitch.audio_io import load_audio_fileobj
 from pitch.analysis import analyze, Analysis
 from pitch.segmentation import segment_notes
-from pitch.render import render_master
+from pitch.render import render_master, render_output, mix_vocal_backing, \
+    true_peak_limit, normalize_true_peak
 from pitch.schema import notes_to_json, notes_from_json, f32_to_b64
 
 app = FastAPI(title="Vocal Pitch Editor")
+
+
+@dataclass
+class Backing:
+    pcm: np.ndarray          # shape=(N, 2) float32、ボーカルと同一 SR（ステレオ保持）
+    sample_rate: int
+    duration_sec: float
+    channels: int
 
 
 @dataclass
@@ -38,6 +47,7 @@ class Session:
     analysis: Analysis
     duration_sec: float
     file_name: str = "vocal"
+    backing: Backing = None
 
 
 SESSIONS: dict[str, Session] = {}
@@ -133,10 +143,21 @@ def export(req: ExportRequest):
     if sess is None:
         raise HTTPException(404, "セッションが見つかりません（再アップロードしてください）")
 
-    # ボーカル（フル解像度・全区間一括。プレビューの間引きは使わない・13.2）。
-    y = _render_vocal(sess, req.editState or {}, normalize=req.normalize)
-    # target="mix": 伴奏加算は Phase 6 で実装。現状は vocal と同じ。
     sr = sess.analysis.sample_rate
+    es = req.editState or {}
+    if req.target == "mix" and sess.backing is not None:
+        # ミックス: ボーカル（リミッター前）+ 伴奏 → 加算 → 出力段でリミッター（13.2）。
+        notes = notes_from_json(es.get("notes", []))
+        vocal = render_output(sess.analysis, notes,
+                              master_gain_db=float(es.get("masterGainDb", 0.0)))
+        b = es.get("backing", {}) or {}
+        y = mix_vocal_backing(
+            vocal, sess.backing.pcm, float(b.get("offsetSec", 0.0)), sr,
+            backing_gain_db=float(b.get("gainDb", 0.0)), backing_mute=bool(b.get("mute", False)))
+        y = normalize_true_peak(y) if req.normalize else true_peak_limit(y)
+    else:
+        # ボーカルのみ（フル解像度・全区間一括。プレビューの間引きは使わない・13.2）。
+        y = _render_vocal(sess, es, normalize=req.normalize)
     y = y.astype(np.float32)
 
     fmt = req.format.lower()
@@ -169,6 +190,73 @@ def export(req: ExportRequest):
 @app.delete("/api/session/{sid}")
 def delete_session(sid: str):
     SESSIONS.pop(sid, None)
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------
+# POST /api/backing — 伴奏をアップロード（解析しない・ステレオ保持・12章）
+# --------------------------------------------------------------------------
+
+def _compute_peaks(pcm: np.ndarray, max_points: int = 4000) -> np.ndarray:
+    """波形表示用に間引いたピーク列（各窓の最大絶対値、L/R の大きい方）。"""
+    mono = np.max(np.abs(pcm), axis=1) if pcm.ndim == 2 else np.abs(pcm)
+    n = len(mono)
+    w = max(1, n // max_points)
+    trimmed = mono[: (n // w) * w].reshape(-1, w)
+    return trimmed.max(axis=1).astype(np.float32) if trimmed.size else mono.astype(np.float32)
+
+
+@app.post("/api/backing")
+async def upload_backing(sessionId: str = Form(...), audio: UploadFile = File(...)):
+    sess = SESSIONS.get(sessionId)
+    if sess is None:
+        raise HTTPException(404, "セッションが見つかりません")
+    raw = await audio.read()
+    try:
+        data, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)  # ステレオ保持
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"伴奏を読み込めませんでした: {exc}")
+
+    if data.shape[1] == 1:
+        data = np.repeat(data, 2, axis=1)   # モノ伴奏はステレオ化
+
+    vocal_sr = sess.analysis.sample_rate
+    if sr != vocal_sr:
+        # 伴奏側だけをボーカルの SR に合わせる（ボーカルは絶対にリサンプルしない・12.1）。
+        from scipy.signal import resample_poly
+        from math import gcd
+        g = gcd(int(vocal_sr), int(sr))
+        data = resample_poly(data, vocal_sr // g, sr // g, axis=0).astype(np.float32)
+        sr = vocal_sr
+
+    dur = data.shape[0] / sr
+    sess.backing = Backing(pcm=np.ascontiguousarray(data), sample_rate=sr,
+                           duration_sec=dur, channels=2)
+    return {
+        "backingId": sessionId,          # セッションに1本（キーはセッションID）
+        "sampleRate": sr,
+        "durationSec": dur,
+        "channels": 2,
+        "peaks": f32_to_b64(_compute_peaks(data)),
+    }
+
+
+@app.get("/api/backing/{sid}/audio")
+def backing_audio(sid: str):
+    """伴奏の再生用ストリーム（ステレオ float32 WAV）。"""
+    sess = SESSIONS.get(sid)
+    if sess is None or sess.backing is None:
+        raise HTTPException(404, "伴奏がありません")
+    buf = io.BytesIO()
+    sf.write(buf, sess.backing.pcm, sess.backing.sample_rate, format="WAV", subtype="FLOAT")
+    return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+@app.delete("/api/backing/{sid}")
+def delete_backing(sid: str):
+    sess = SESSIONS.get(sid)
+    if sess:
+        sess.backing = None
     return {"ok": True}
 
 

@@ -19,7 +19,9 @@ const state = {
   master: 0.0,          // masterGainDb
   mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
-  audio: { ctx: null, buffer: null, source: null, playing: false },
+  audio: { ctx: null, buffer: null, source: null, playing: false,
+           backingSrc: null, vocalGain: null, backingGain: null, startAt: 0 },
+  backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
   dirty: false,         // 未再合成の編集があるか
 };
 
@@ -39,6 +41,16 @@ const els = {
   fmt: document.getElementById("fmt"),
   normalize: document.getElementById("normalize"),
   export: document.getElementById("export"),
+  bfile: document.getElementById("bfile"),
+  backinglane: document.getElementById("backinglane"),
+  bcanvas: document.getElementById("bcanvas"),
+  bvol: document.getElementById("bvol"),
+  bmute: document.getElementById("bmute"),
+  bsolo: document.getElementById("bsolo"),
+  boffset: document.getElementById("boffset"),
+  bremove: document.getElementById("bremove"),
+  playhead: document.getElementById("playhead"),
+  bplayhead: document.getElementById("bplayhead"),
 };
 
 const setStatus = (msg) => { els.status.textContent = msg; };
@@ -95,6 +107,7 @@ function draw() {
   state.view = makeView(state.session, contentW, viewH);
   renderScene(els.grid.getContext("2d"), state.view, null);
   drawKeys();
+  if (state.backing) drawBacking();
 }
 
 // ドラッグ中の再描画を requestAnimationFrame で間引く（最大リフレッシュレート）。
@@ -492,6 +505,7 @@ els.file.addEventListener("change", async (e) => {
     const nSeg = j.notes.reduce((a, n) => a + n.segments.length, 0);
     setStatus(`${j.durationSec.toFixed(2)}s / ${j.sampleRate}Hz / ${j.notes.length}ノート ${nSeg}セグメント`);
     els.export.disabled = false;
+    els.bfile.disabled = false;   // 伴奏追加を有効化
     await renderAndLoad(false);   // 初期プレビューを用意
   } catch (err) {
     setStatus("エラー: " + err.message);
@@ -499,8 +513,107 @@ els.file.addEventListener("change", async (e) => {
 });
 
 function buildEditState() {
-  return { notes: state.session.notes, masterGainDb: state.master };
+  const es = { notes: state.session.notes, masterGainDb: state.master };
+  if (state.backing) es.backing = {
+    offsetSec: state.backing.offsetSec, gainDb: state.backing.gainDb,
+    mute: state.backing.mute, solo: state.backing.solo,
+  };
+  return es;
 }
+
+// ==========================================================================
+// 伴奏（バッキング）トラック（12章）
+// ==========================================================================
+els.bfile.addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f || !state.session) return;
+  setStatus("伴奏を解析中…");
+  const fd = new FormData();
+  fd.append("sessionId", state.session.sessionId);
+  fd.append("audio", f);
+  try {
+    const res = await fetch("/api/backing", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const j = await res.json();
+    j.peaks = b64ToF32(j.peaks);
+    // 再生用オーディオを取得してデコード
+    const ab = await (await fetch(`/api/backing/${state.session.sessionId}/audio`)).arrayBuffer();
+    const buffer = await ensureAudioCtx().decodeAudioData(ab);
+    state.backing = {
+      peaks: j.peaks, durationSec: j.durationSec, buffer,
+      offsetSec: 0, gainDb: 0, mute: false, solo: false,
+    };
+    els.backinglane.hidden = false;
+    els.boffset.value = "0"; els.bvol.value = "0";
+    els.bmute.classList.remove("on"); els.bsolo.classList.remove("on");
+    resizeCanvases(); draw(); drawBacking();
+    setStatus("伴奏を追加しました");
+  } catch (err) {
+    setStatus("伴奏エラー: " + err.message);
+  }
+  els.bfile.value = "";
+});
+
+// 伴奏波形（peaks から描画）。グリッドと同じ時間軸・幅で並べる。
+function drawBacking() {
+  if (!state.backing || !state.view) return;
+  const v = state.view, dpr = window.devicePixelRatio || 1;
+  const cw = v.width, ch = els.bcanvas.parentElement.clientHeight;
+  els.bcanvas.style.width = cw + "px"; els.bcanvas.style.height = ch + "px";
+  els.bcanvas.width = Math.round(cw * dpr); els.bcanvas.height = Math.round(ch * dpr);
+  const ctx = els.bcanvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cw, ch);
+  const peaks = state.backing.peaks, dur = state.backing.durationSec;
+  const mid = ch / 2;
+  ctx.strokeStyle = "rgba(120,180,140,0.85)";
+  ctx.beginPath();
+  for (let i = 0; i < peaks.length; i++) {
+    const t = (i / peaks.length) * dur + state.backing.offsetSec;  // 頭合わせを反映
+    const x = v.timeToX(t), a = peaks[i] * (mid - 2);
+    ctx.moveTo(x, mid - a); ctx.lineTo(x, mid + a);
+  }
+  ctx.stroke();
+}
+
+// 伴奏コントロール
+els.bvol.addEventListener("input", () => {
+  if (!state.backing) return;
+  state.backing.gainDb = parseFloat(els.bvol.value);
+  applyMixGains();
+});
+els.bmute.addEventListener("click", () => {
+  if (!state.backing) return;
+  state.backing.mute = !state.backing.mute;
+  els.bmute.classList.toggle("on", state.backing.mute);
+  applyMixGains();
+});
+els.bsolo.addEventListener("click", () => {
+  if (!state.backing) return;
+  state.backing.solo = !state.backing.solo;
+  els.bsolo.classList.toggle("on", state.backing.solo);
+  applyMixGains();
+});
+els.boffset.addEventListener("change", () => {
+  if (!state.backing) return;
+  state.backing.offsetSec = parseFloat(els.boffset.value) || 0;
+  drawBacking();
+});
+els.bremove.addEventListener("click", async () => {
+  if (!state.backing || !state.session) return;
+  await fetch(`/api/backing/${state.session.sessionId}`, { method: "DELETE" });
+  state.backing = null;
+  els.backinglane.hidden = true;
+});
+
+// グリッドと伴奏レーンの横スクロールを同期（時間軸を揃える）。
+els.grid.parentElement.addEventListener("scroll", () => {
+  if (!state.backing) return;
+  els.bcanvas.parentElement.scrollLeft = els.grid.parentElement.scrollLeft;
+});
+els.bcanvas.parentElement.addEventListener("scroll", () => {
+  els.grid.parentElement.scrollLeft = els.bcanvas.parentElement.scrollLeft;
+});
 
 // ==========================================================================
 // 書き出し（/api/export）+ ダウンロード（13.3）
@@ -517,7 +630,7 @@ async function exportAudio() {
       body: JSON.stringify({
         sessionId: state.session.sessionId,
         editState: buildEditState(),
-        target: "vocal",              // 伴奏ミックスは Phase 6
+        target: state.backing ? "mix" : "vocal",   // 伴奏があればミックス書き出し
         format: fmt,
         bitDepth: fmt === "mp3" ? 16 : 24,
         mp3Bitrate: 256,
@@ -568,34 +681,111 @@ async function renderAndLoad(autoplay) {
 }
 
 // ==========================================================================
-// 再生（Web Audio）
+// 再生（Web Audio）— ボーカル + 伴奏をサンプル精度で同期（12.2）
 // ==========================================================================
 function ensureAudioCtx() {
   if (!state.audio.ctx) state.audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
   return state.audio.ctx;
 }
+
 function playAudio() {
   const a = state.audio;
   if (!a.buffer) return;
   stopAudio();
   const ctx = ensureAudioCtx();
-  const src = ctx.createBufferSource();
-  src.buffer = a.buffer; src.connect(ctx.destination);
-  src.onended = () => { a.playing = false; els.grid.classList.remove("locked"); els.stop.disabled = true; };
-  src.start();
-  a.source = src; a.playing = true;
-  els.grid.classList.add("locked"); els.stop.disabled = false;
+  const t0 = ctx.currentTime + 0.1;   // 100ms ルックアヘッド（12.2）
+
+  // ボーカル
+  a.vocalGain = ctx.createGain();
+  a.vocalGain.connect(ctx.destination);
+  const vsrc = ctx.createBufferSource();
+  vsrc.buffer = a.buffer; vsrc.connect(a.vocalGain);
+
+  // 伴奏（あれば）: 単一 AudioContext 上で同じ t0 基準に開始（AC-18）
+  let bsrc = null, sched = { vocalStart: t0, vocalOffset: 0, backingStart: t0, backingOffset: 0 };
+  if (state.backing && state.backing.buffer) {
+    sched = PL.computePlaybackSchedule(t0, state.backing.offsetSec, 0);
+    a.backingGain = ctx.createGain();
+    a.backingGain.connect(ctx.destination);
+    bsrc = ctx.createBufferSource();
+    bsrc.buffer = state.backing.buffer; bsrc.connect(a.backingGain);
+  }
+  applyMixGains();   // ミュート/ソロ/音量をゲインノードへ
+
+  vsrc.onended = () => { if (a.source === vsrc) stopAudio(); };
+  vsrc.start(sched.vocalStart, sched.vocalOffset);
+  if (bsrc) bsrc.start(Math.max(ctx.currentTime, sched.backingStart),
+                       Math.max(0, sched.backingOffset));
+
+  a.source = vsrc; a.backingSrc = bsrc; a.playing = true; a.startAt = t0;
+  setTransportPlaying(true);
+  startPlayhead();
 }
+
 function stopAudio() {
   const a = state.audio;
-  if (a.source) { try { a.source.onended = null; a.source.stop(); } catch (_) {} a.source = null; }
-  a.playing = false; els.grid.classList.remove("locked"); els.stop.disabled = true;
+  for (const s of [a.source, a.backingSrc]) {
+    if (s) { try { s.onended = null; s.stop(); } catch (_) {} }
+  }
+  a.source = a.backingSrc = null;
+  a.playing = false;
+  setTransportPlaying(false);
+  stopPlayhead();
 }
+
+// 再生中は編集をロック（F-7 / AC-19）: グリッド・各コントロールを無効化。
+function setTransportPlaying(playing) {
+  els.grid.classList.toggle("locked", playing);
+  els.stop.disabled = !playing;
+  els.master.disabled = playing;
+  els.strength.disabled = playing || !state.selected;
+  els.export.disabled = playing || !state.session;
+  const hasBacking = !!state.backing;
+  for (const el of [els.bvol, els.bmute, els.bsolo, els.boffset, els.bremove])
+    el.disabled = playing || !hasBacking;
+  els.bfile.disabled = playing || !state.session;
+}
+
+function applyMixGains() {
+  const a = state.audio, b = state.backing;
+  if (a.vocalGain) {
+    // 伴奏ソロ中はボーカルを無音に
+    const v = (b && b.solo) ? 0 : 1;
+    a.vocalGain.gain.value = v;
+  }
+  if (a.backingGain && b) {
+    const g = b.mute ? 0 : Math.pow(10, b.gainDb / 20);
+    a.backingGain.gain.value = g;
+  }
+}
+
 els.play.addEventListener("click", () => {
   ensureAudioCtx().resume();
-  if (state.dirty) renderAndLoad(true); else playAudio();
+  if (state.dirty) renderAndLoad(true); else playAudio();   // AC-20: dirty なら必ず再合成
 });
 els.stop.addEventListener("click", stopAudio);
+
+// --- 再生ヘッド（両レーンを貫く縦線・12.4） ---
+let _playheadRAF = 0;
+function startPlayhead() {
+  els.playhead.hidden = false;
+  if (state.backing) els.bplayhead.hidden = false;
+  const tick = () => {
+    if (!state.audio.playing) return;
+    const t = state.audio.ctx.currentTime - state.audio.startAt;   // 経過秒（seek=0）
+    if (t >= 0 && state.view) {
+      const x = state.view.timeToX(t);
+      els.playhead.style.left = x + "px";
+      if (!els.bplayhead.hidden) els.bplayhead.style.left = x + "px";
+    }
+    _playheadRAF = requestAnimationFrame(tick);
+  };
+  _playheadRAF = requestAnimationFrame(tick);
+}
+function stopPlayhead() {
+  cancelAnimationFrame(_playheadRAF);
+  els.playhead.hidden = true; els.bplayhead.hidden = true;
+}
 
 // 開発用: URL に #demo を付けるとサンプル音声を自動読み込みする。
 async function loadFromUrl(url) {

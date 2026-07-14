@@ -96,4 +96,22 @@ ok("+12dB → 塗り比 1.5(はみ出す)", near(PL.gainFillFraction(12), 1.5));
 ok("塗り比↔gainDb 往復", near(PL.fillFractionToGainDb(PL.gainFillFraction(6)), 6));
 ok("gainDb は +12 でクランプ", PL.fillFractionToGainDb(3.0) === 12);
 
+// --- AC-18: 同時再生スケジュール（同一 t0 / offset の反映） ---
+const s0 = PL.computePlaybackSchedule(100, 0, 0);
+ok("AC-18 offset=0 で両者が同一 t0", s0.vocalStart === 100 && s0.backingStart === 100);
+ok("AC-18 offset=0 でバッファ位置も一致", s0.vocalOffset === 0 && s0.backingOffset === 0);
+const sp = PL.computePlaybackSchedule(100, 0.3, 0);
+ok("正offset=伴奏を遅らせる(開始が+0.3)", Math.abs(sp.backingStart - 100.3) < 1e-9);
+ok("正offset: 相対遅れ = offset", Math.abs((sp.backingStart - sp.vocalStart) - 0.3) < 1e-9);
+const sn = PL.computePlaybackSchedule(100, -0.2, 0);
+ok("負offset: 同時刻開始で伴奏先頭を切り詰め", sn.backingStart === 100 && Math.abs(sn.backingOffset - 0.2) < 1e-9);
+const ss = PL.computePlaybackSchedule(100, 0, 1.5);
+ok("seek 時も両者同一位置", ss.vocalOffset === 1.5 && ss.backingOffset === 1.5 && ss.backingStart === 100);
+
+// --- AC-19: 再生中は編集不可（canEdit） ---
+ok("canEdit: stopped=可", PL.canEdit("stopped") === true);
+ok("canEdit: dirty=可", PL.canEdit("dirty") === true);
+ok("canEdit: rendering=不可", PL.canEdit("rendering") === false);
+ok("canEdit: playing=不可", PL.canEdit("playing") === false);
+
 console.log(`\n${pass} checks passed`);

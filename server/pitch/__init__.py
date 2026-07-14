@@ -9,7 +9,8 @@ from .audio_io import load_audio, LoadedAudio
 from .analysis import estimate_f0, analyze, Analysis
 from .segmentation import segment_notes, Note, Segment
 from .render import (render_f0, render_gain, synthesize, render_output,
-                     render_master, true_peak_db, true_peak_limit)
+                     render_master, true_peak_db, true_peak_limit,
+                     mix_vocal_backing)
 
 __all__ = [
     "hz_to_cents",

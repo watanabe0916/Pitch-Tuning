@@ -119,6 +119,28 @@
     return Object.assign({}, note, { segments: segs });
   }
 
+  // 同時再生のスケジュール（12.2）: 単一 AudioContext 上で両ソースに
+  // 同じ基準時刻 t0 を渡す。offsetSec 正 = 伴奏を遅らせる（書き出しと一致）。
+  // offset=0 のとき両者は完全に同一 t0 で開始する（AC-18）。
+  function computePlaybackSchedule(t0, offsetSec, seekSec) {
+    seekSec = seekSec || 0;
+    if (offsetSec >= 0) {
+      return {
+        vocalStart: t0, vocalOffset: seekSec,
+        backingStart: t0 + offsetSec, backingOffset: seekSec,
+      };
+    }
+    return {
+      vocalStart: t0, vocalOffset: seekSec,
+      backingStart: t0, backingOffset: seekSec - offsetSec,  // 先頭を切り詰める
+    };
+  }
+
+  // 再生中は編集を受け付けない（F-7 / AC-19）。transport が編集可能か。
+  function canEdit(transport) {
+    return transport === "stopped" || transport === "dirty";
+  }
+
   // 分割線の移動: seg[i-1].endSec と seg[i].startSec を同時に t へ（最小長でクランプ）。
   function moveDivider(note, boundaryIndex, tSec, minLenSec) {
     const i = boundaryIndex, segs = note.segments;
@@ -137,5 +159,6 @@
            segAtTime, offsetAtTime, pitchRange, makeTransforms,
            newId, gainFillFraction, fillFractionToGainDb,
            GAIN_FILL_MAX_DB, GAIN_FILL_MIN_DB, FINE_SNAP_CENTS,
-           splitNote, mergeNote, moveDivider };
+           splitNote, mergeNote, moveDivider,
+           computePlaybackSchedule, canEdit };
 });

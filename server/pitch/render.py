@@ -376,6 +376,37 @@ def normalize_true_peak(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBT
     return x * (ceil_lin / tp)
 
 
+def mix_vocal_backing(vocal: np.ndarray, backing: np.ndarray, offset_sec: float,
+                      sample_rate: int, backing_gain_db: float = 0.0,
+                      backing_mute: bool = False) -> np.ndarray:
+    """モノラルのボーカルとステレオ伴奏を加算してステレオを返す（13.2）。
+
+    ボーカルはセンター配置（L=R）。伴奏は offset_sec だけずらして重ねる。
+    offset_sec > 0: 伴奏を遅らせる（先頭に無音）。< 0: 伴奏の先頭を切り詰める。
+    出力長 = max(ボーカル長, 伴奏長 + offset)（13.2）。
+    """
+    vocal = np.asarray(vocal, dtype=np.float64).reshape(-1)
+    backing = np.asarray(backing, dtype=np.float64)
+    if backing.ndim == 1:
+        backing = np.stack([backing, backing], axis=1)   # モノ伴奏はステレオ化
+
+    off = int(round(offset_sec * sample_rate))
+    vlen = len(vocal)
+    b_out_start = max(0, off)         # 出力上の伴奏開始サンプル
+    b_src_start = max(0, -off)        # 伴奏バッファの読み出し開始（負offsetで先頭切り）
+    b_avail = backing.shape[0] - b_src_start
+    total = max(vlen, b_out_start + max(0, b_avail))
+
+    out = np.zeros((total, 2), dtype=np.float64)
+    out[:vlen, 0] += vocal            # ボーカル → センター
+    out[:vlen, 1] += vocal
+    if not backing_mute and b_avail > 0:
+        g = 10.0 ** (backing_gain_db / 20.0)
+        seg = backing[b_src_start:b_src_start + (total - b_out_start)]
+        out[b_out_start:b_out_start + len(seg), :] += seg * g
+    return out
+
+
 def render_master(analysis: Analysis, notes, master_gain_db: float = 0.0,
                   ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
                   normalize: bool = False) -> np.ndarray:
