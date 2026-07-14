@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Phase 1 生成物（テスト音声・図）
+server/out/
+
+# OS
+.DS_Store

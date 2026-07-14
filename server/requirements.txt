@@ -1,0 +1,12 @@
+# ボーカル・ピッチエディタ サーバー側依存関係
+# Phase 1-2: 解析・再合成
+numpy
+scipy
+matplotlib
+soundfile      # 音声入出力 (libsndfile)
+pyworld        # WORLD: F0 推定(Harvest) + 再合成(cheaptrick/d4c/synthesize)
+
+# 備考: F0 推定は当初 librosa(pyin) を想定していたが、依存の numba/llvmlite が
+# LLVM ビルドを要し導入が重いため、WORLD Harvest に一本化した。Phase 2 の
+# 再合成と同じ基盤で扱える利点もある。torchcrepe 等へ差し替える場合は
+# analysis.estimate_f0 のみ変更すればよい。
