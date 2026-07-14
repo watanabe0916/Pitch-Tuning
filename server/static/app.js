@@ -466,6 +466,7 @@ els.grid.addEventListener("mousedown", (e) => {
     state.drag = { mode: "marquee", x0: px, y0: py, x1: px, y1: py, moved: false };
     if (!(e.shiftKey)) setSelection([]);      // Shift でなければ選択を一旦クリア
     prepareDragBackground(new Set());          // シーン全体を背景キャッシュ
+    startMarqueeAutoScroll();                  // 端での自動横スクロールを開始
     return;
   }
 
@@ -619,6 +620,7 @@ window.addEventListener("mousemove", (e) => {
   if (d.mode === "marquee") {
     const r = els.grid.getBoundingClientRect();
     d.x1 = e.clientX - r.left; d.y1 = e.clientY - r.top;
+    // 端での自動スクロールは marqueeAutoScrollTick が毎フレーム面倒を見る
   } else if (d.mode === "pitch") {
     updateSnapLabel(e);
     // 主バーのスナップ済み差分を全選択バーに適用（相対移動）
@@ -646,10 +648,69 @@ window.addEventListener("mousemove", (e) => {
   scheduleDraw();   // rAF で間引いて再描画（他タブが重くならないように）
 });
 
+// 実際に横スクロールしている要素を特定する。.gridwrap とは限らず、
+// レイアウト次第でウィンドウ(documentElement)や別の祖先がスクローラになりうるため、
+// grid から上へ辿って「overflow-x があり実際に内容がはみ出している」最初の要素を返す。
+function horizontalScroller() {
+  let el = els.grid.parentElement;
+  while (el && el !== document.body && el !== document.documentElement) {
+    const ox = getComputedStyle(el).overflowX;
+    if ((ox === "auto" || ox === "scroll") && el.scrollWidth - el.clientWidth > 1) return el;
+    el = el.parentElement;
+  }
+  const doc = document.scrollingElement || document.documentElement;
+  if (doc && doc.scrollWidth - doc.clientWidth > 1) return doc;
+  return gridwrap();   // フォールバック（スクロール不能でも害はない）
+}
+
+// 範囲選択中、ポインタがビューポート左右端に来たら自動で横スクロールし、
+// 画面外の内容まで選択範囲を伸ばせるようにする。マーキー開始時にループを起動し、
+// 終了まで毎フレーム現在のマウス位置を見て回し続ける（マウスを端で止めても効く）。
+let _marqueeScrollRAF = 0;
+function startMarqueeAutoScroll() {
+  if (!_marqueeScrollRAF) _marqueeScrollRAF = requestAnimationFrame(marqueeAutoScrollTick);
+}
+function marqueeAutoScrollTick() {
+  _marqueeScrollRAF = 0;
+  const d = state.drag;
+  if (!d || d.mode !== "marquee") return;   // ドラッグ終了で自然に停止
+  // 端の判定は「実際に画面に見えている編集領域」で行う。
+  // gridwrap の rect.right がレイアウト都合で画面外に出ていても、
+  // window.innerWidth でクランプすれば見えている右端で判定できる。
+  const rect = gridwrap().getBoundingClientRect();
+  const viewLeft = Math.max(rect.left, 0);
+  const viewRight = Math.min(rect.right, window.innerWidth);
+  const EDGE = 48, MAXV = 26;   // 端から EDGE px を加速帯、最大 MAXV px/frame
+  const x = state.mouse.clientX;
+  let v = 0;
+  if (x < viewLeft + EDGE) v = -Math.min(EDGE, viewLeft + EDGE - x) / EDGE * MAXV;
+  else if (x > viewRight - EDGE) v = Math.min(EDGE, x - (viewRight - EDGE)) / EDGE * MAXV;
+  if (v !== 0) {
+    const sc = horizontalScroller();   // 実際にスクロールする要素へ適用
+    const maxScroll = Math.max(0, sc.scrollWidth - sc.clientWidth);
+    const ns = Math.max(0, Math.min(maxScroll, sc.scrollLeft + v));
+    if (ns !== sc.scrollLeft) {
+      sc.scrollLeft = ns;
+      // スクロールで grid の位置がずれるので、静止したマウスでも矩形端が内容側へ伸びる
+      const r = els.grid.getBoundingClientRect();
+      d.x1 = state.mouse.clientX - r.left;
+      d.y1 = state.mouse.clientY - r.top;
+      scheduleDraw();
+    }
+    // 切り分け用の表示（動かない場合に原因を特定するため）
+    setStatus(`自動スクロール: 対象=${sc === document.documentElement ? "window" : (sc.className || sc.id || sc.tagName)} 余地=${maxScroll|0}px 速度=${v|0}`);
+  }
+  _marqueeScrollRAF = requestAnimationFrame(marqueeAutoScrollTick);   // ドラッグ中は回し続ける
+}
+function stopMarqueeAutoScroll() {
+  if (_marqueeScrollRAF) { cancelAnimationFrame(_marqueeScrollRAF); _marqueeScrollRAF = 0; }
+}
+
 function endDrag() {
   const d = state.drag;
   if (!d) return;
   state.drag = null;
+  stopMarqueeAutoScroll();
   if (d.mode === "marquee") {
     const v = state.view;
     if (d.moved) {
