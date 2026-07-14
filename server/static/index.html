@@ -17,6 +17,17 @@
       <input id="bfile" type="file" accept="audio/*" hidden disabled />
     </label>
     <button id="record" class="rec">● 録音</button>
+    <label class="slider" title="テンポ（小節線・メトロノーム）">♩=<input id="bpm" type="number" min="30" max="300" step="1" value="120" style="width:52px" /></label>
+    <label class="slider" title="拍子（1小節の拍数）">拍子
+      <select id="beats">
+        <option value="2">2/4</option>
+        <option value="3">3/4</option>
+        <option value="4" selected>4/4</option>
+        <option value="5">5/4</option>
+        <option value="6">6/8</option>
+      </select>
+    </label>
+    <button id="metro" class="tgl on" title="メトロノーム（録音中に鳴らす）">🔔</button>
     <span id="meter" class="meter" hidden><span id="meterbar" class="meterbar"></span><span id="meterlabel">-∞</span></span>
     <button id="play" disabled>▶ 再生</button>
     <button id="stop" disabled>■ 停止</button>

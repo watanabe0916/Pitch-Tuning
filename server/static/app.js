@@ -35,6 +35,8 @@ const state = {
   phDrag: false,    // 再生ヘッドを掴んでドラッグ中か
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
   dirty: false,         // 未再合成の編集があるか
+  tempo: { bpm: 120, beatsPerBar: 4 },   // 小節線とメトロノームのテンポ・拍子
+  metronome: { on: true, timer: null },  // 録音中にメトロノームを鳴らすか
 };
 
 const els = {
@@ -66,6 +68,9 @@ const els = {
   phgrab: document.querySelector(".phgrab"),
   tostart: document.getElementById("tostart"),
   record: document.getElementById("record"),
+  bpm: document.getElementById("bpm"),
+  beats: document.getElementById("beats"),
+  metro: document.getElementById("metro"),
   meter: document.getElementById("meter"),
   meterbar: document.getElementById("meterbar"),
   meterlabel: document.getElementById("meterlabel"),
@@ -227,14 +232,27 @@ function renderScene(ctx, v, skip) {
     ctx.beginPath(); ctx.moveTo(0, v.centsToY(c)); ctx.lineTo(v.width, v.centsToY(c)); ctx.stroke();
   }
 
-  // 時間グリッド（画面幅に応じ間隔を選び、見える範囲だけ描く）
-  ctx.strokeStyle = "#22262e"; ctx.fillStyle = "#555"; ctx.font = "10px sans-serif";
-  const step = v.t1 > 30 ? 5 : (v.t1 > 12 ? 1 : 0.5);
-  for (let t = 0; t <= v.t1; t += step) {
+  // 時間グリッド = BPM と拍子による拍線・小節線。
+  // 小節線は明るく＋小節番号、拍線は細く。BPM が速く拍線が密なら間引く。
+  ctx.font = "10px sans-serif";
+  const bpm = state.tempo.bpm, beats = state.tempo.beatsPerBar;
+  const spb = 60 / bpm;                       // 1拍の秒数
+  const beatPx = spb * (v.width / (v.t1 || 1));
+  const beatStride = beatPx < 6 ? Math.ceil(6 / beatPx) : 1;  // 拍線が詰まりすぎたら間引く
+  let bi = 0;
+  for (let t = 0; t <= v.t1 + 1e-6; t += spb, bi++) {
     const x = v.timeToX(t);
+    const isBar = bi % beats === 0;
+    if (!isBar && (bi % beatStride !== 0)) continue;
+    ctx.strokeStyle = isBar ? "#39414f" : "#242932";
+    ctx.lineWidth = isBar ? 1.4 : 1;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
-    ctx.fillText(t.toFixed(step < 1 ? 1 : 0) + "s", x + 2, v.height - 4);
+    if (isBar) {                              // 小節番号（1始まり）
+      ctx.fillStyle = "#6b7280";
+      ctx.fillText(String(bi / beats + 1), x + 3, 11);
+    }
   }
+  ctx.lineWidth = 1;
 
   // フレーズ境界（無音での分割点・10.4）を薄いシアンの破線で示す
   const bounds = state.session.phraseBounds || [];
@@ -697,8 +715,6 @@ function marqueeAutoScrollTick() {
       d.y1 = state.mouse.clientY - r.top;
       scheduleDraw();
     }
-    // 切り分け用の表示（動かない場合に原因を特定するため）
-    setStatus(`自動スクロール: 対象=${sc === document.documentElement ? "window" : (sc.className || sc.id || sc.tagName)} 余地=${maxScroll|0}px 速度=${v|0}`);
   }
   _marqueeScrollRAF = requestAnimationFrame(marqueeAutoScrollTick);   // ドラッグ中は回し続ける
 }
@@ -1033,6 +1049,62 @@ els.record.addEventListener("click", () => {
   if (state.rec && state.rec.active) stopRecording(); else startRecording();
 });
 
+// --- テンポ・拍子・メトロノーム ---
+function retempoMetronome() {   // 録音中なら新テンポでメトロノームを張り直す
+  if (state.rec && state.rec.active && state.metronome.on) startMetronome(state.rec.ctx);
+}
+els.bpm.addEventListener("input", () => {
+  const b = Math.max(30, Math.min(300, parseInt(els.bpm.value, 10) || 120));
+  state.tempo.bpm = b;
+  if (state.session) draw();   // 小節線を引き直す
+  retempoMetronome();
+});
+els.beats.addEventListener("change", () => {
+  state.tempo.beatsPerBar = parseInt(els.beats.value, 10) || 4;
+  if (state.session) draw();
+  retempoMetronome();
+});
+els.metro.addEventListener("click", () => {
+  state.metronome.on = !state.metronome.on;
+  els.metro.classList.toggle("on", state.metronome.on);
+  els.metro.title = "メトロノーム（録音中に鳴らす）: " + (state.metronome.on ? "ON" : "OFF");
+  // 録音中に切り替えたら即反映（フレッシュに開始/停止して連打を防ぐ）
+  if (state.rec && state.rec.active) {
+    if (state.metronome.on) startMetronome(state.rec.ctx); else stopMetronome();
+  }
+});
+
+// メトロノーム: 録音用 AudioContext 上で先読みスケジュールする（11.4）。
+// クリック音は OscillatorNode（1拍目=高め＝アクセント）。出力先は destination
+// （ヘッドホン前提。マイクには入らない。録音は worklet がマイクを別途取得）。
+function startMetronome(ctx) {
+  const m = state.metronome;
+  stopMetronome();
+  const spb = 60 / state.tempo.bpm, beats = state.tempo.beatsPerBar;
+  let beat = 0, next = ctx.currentTime + 0.15;
+  const tick = () => {
+    if (!m.on) return;                       // 途中で OFF にされたら鳴らさない
+    while (next < ctx.currentTime + 0.12) {  // 120ms 先まで先読み
+      scheduleClick(ctx, next, beat % beats === 0);
+      next += spb; beat++;
+    }
+  };
+  tick();
+  m.timer = setInterval(tick, 25);
+}
+function scheduleClick(ctx, time, accent) {
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.frequency.value = accent ? 1600 : 1000;
+  g.gain.setValueAtTime(0.0001, time);
+  g.gain.exponentialRampToValueAtTime(accent ? 0.6 : 0.32, time + 0.001);
+  g.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+  osc.connect(g); g.connect(ctx.destination);
+  osc.start(time); osc.stop(time + 0.06);
+}
+function stopMetronome() {
+  if (state.metronome.timer) { clearInterval(state.metronome.timer); state.metronome.timer = null; }
+}
+
 async function startRecording() {
   if (state.audio.playing) stopAudio();
   try {
@@ -1060,6 +1132,7 @@ async function startRecording() {
 
     els.record.classList.add("on"); els.record.textContent = "■ 録音停止";
     els.meter.hidden = false;
+    if (state.metronome.on) startMetronome(ctx);   // 録音中のメトロノーム（ヘッドホン前提）
     setStatus("録音中… ピークが -12dBFS 付近になるように（0dBFS でクリップ）");
     startMeter();
   } catch (err) {
@@ -1073,6 +1146,7 @@ async function stopRecording() {
   if (!r || !r.active) return;
   r.active = false;
   cancelAnimationFrame(r.meterRAF);
+  stopMetronome();                     // ctx.close() の前にメトロノームを止める
   const samples = RL.concatFloat32(r.chunks);
   const sr = r.ctx.sampleRate;         // 11.3: 実際の SR を使う
   try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) { }
