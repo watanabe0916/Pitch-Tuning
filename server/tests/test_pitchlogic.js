@@ -114,4 +114,32 @@ ok("canEdit: dirty=可", PL.canEdit("dirty") === true);
 ok("canEdit: rendering=不可", PL.canEdit("rendering") === false);
 ok("canEdit: playing=不可", PL.canEdit("playing") === false);
 
+// --- 範囲選択（マーキー） ---
+const rn = [
+  { id: "n0", segments: [
+    { id: "a", startSec: 0.0, endSec: 0.5, baseCents: 6000, pitchOffsetCents: 0 },
+    { id: "b", startSec: 0.5, endSec: 1.0, baseCents: 6700, pitchOffsetCents: 0 } ] },
+  { id: "n1", segments: [
+    { id: "c", startSec: 1.2, endSec: 1.8, baseCents: 7200, pitchOffsetCents: 0 } ] },
+];
+ok("矩形が時間と音高で交差するバーを選択",
+   PL.segmentsInRect(rn, 0.2, 0.8, 5900, 6100).map(s => s.id).join() === "a");
+ok("広い矩形は複数選択",
+   PL.segmentsInRect(rn, 0.0, 2.0, 5000, 8000).length === 3);
+ok("音高が外れると選択されない",
+   PL.segmentsInRect(rn, 0.0, 2.0, 5000, 5500).length === 0);
+ok("時間が外れると選択されない",
+   PL.segmentsInRect(rn, 2.0, 3.0, 5000, 8000).length === 0);
+
+// --- carveSegment（ペースト用の切り出し） ---
+const cnote = { id: "n", segments: [
+  { id: "x", startSec: 0, endSec: 2.0, baseCents: 6000, pitchOffsetCents: 0 } ] };
+const carved = PL.carveSegment(cnote, 0.5, 1.2);
+ok("carve で [a,b] のセグメントが得られる",
+   carved && Math.abs(carved.seg.startSec - 0.5) < 1e-6 && Math.abs(carved.seg.endSec - 1.2) < 1e-6);
+ok("carve は3セグメントに分割", carved.note.segments.length === 3);
+ok("carve 範囲外は null", PL.carveSegment(cnote, 3.0, 4.0) === null);
+const carveEdge = PL.carveSegment(cnote, 0, 1.0);   // 先頭境界に接する
+ok("先頭に接する carve", carveEdge && Math.abs(carveEdge.seg.startSec) < 1e-6);
+
 console.log(`\n${pass} checks passed`);

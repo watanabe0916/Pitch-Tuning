@@ -29,7 +29,7 @@ from pitch.analysis import analyze, Analysis
 from pitch.segmentation import segment_notes
 from pitch.phrases import detect_phrases
 from pitch.render import render_output, mix_vocal_backing, \
-    true_peak_limit, normalize_true_peak
+    true_peak_limit, normalize_true_peak, apply_reverb
 from pitch.schema import (notes_to_json, notes_from_json, f32_to_b64,
                           note_to_dict, note_from_dict, segment_from_dict)
 
@@ -153,39 +153,58 @@ def _local_notes(global_notes, start_sec, end_sec):
     return out
 
 
-def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
-    """フレーズ単位で再合成し、元の時間軸に配置して連結したボーカル波形（リミッター前）。
-
-    フレーズごとに入力(ローカルノート+reverb)のハッシュでキャッシュし、
-    **変わったフレーズだけ**を再合成する（長尺での応答性・10.4）。
-    リバーブの尾は次フレーズ前の無音へ自然に伸びる（加算配置）。マスターは全体後段。
-    """
-    global_notes = notes_from_json(es.get("notes", []))
-    reverb = es.get("reverb")
-    master = float(es.get("masterGainDb", 0.0))
+def _render_primary_parts(sess: Session, global_notes) -> list:
+    """主ボーカルをフレーズ単位で再合成（キャッシュあり）。[(start_sample, y), ...] を返す。"""
+    parts = []
     sr = sess.sample_rate
-    reverb_key = _json.dumps(reverb, sort_keys=True) if reverb else ""
-
-    rendered = []   # (start_sample, y)
     for ph in sess.phrases:
         start_sec = ph.start_sample / sr
-        end_sec = start_sec + ph.n_samples / sr
-        local = _local_notes(global_notes, start_sec, end_sec)
+        local = _local_notes(global_notes, start_sec, start_sec + ph.n_samples / sr)
         key = hashlib.md5(
-            (_json.dumps([note_to_dict(n) for n in local], sort_keys=True)
-             + "|" + reverb_key).encode()).hexdigest()
+            _json.dumps([note_to_dict(n) for n in local], sort_keys=True).encode()).hexdigest()
         if ph.render_key == key and ph.render_out is not None:
             y = ph.render_out                         # キャッシュ命中
         else:
-            y = render_output(ph.analysis, local, master_gain_db=0.0, reverb=reverb)
-            ph.render_key, ph.render_out = key, y     # キャッシュ更新
-        rendered.append((ph.start_sample, y))
+            y = render_output(ph.analysis, local, master_gain_db=0.0)   # reverb は全体後段
+            ph.render_key, ph.render_out = key, y
+        parts.append((ph.start_sample, y))
+    return parts
 
-    total = max([sess.total_samples] + [s + len(y) for s, y in rendered])
+
+def _render_harmony_parts(sess: Session, harmony_notes) -> list:
+    """ハモリ副ボイスをフレーズ単位で合成（ゲートで区間外を無音化）。空フレーズはスキップ。"""
+    parts = []
+    sr = sess.sample_rate
+    for ph in sess.phrases:
+        start_sec = ph.start_sample / sr
+        local = _local_notes(harmony_notes, start_sec, start_sec + ph.n_samples / sr)
+        if not local:
+            continue                                  # このフレーズにハモリの音はない
+        y = render_output(ph.analysis, local, master_gain_db=0.0, gate=True)
+        parts.append((ph.start_sample, y))
+    return parts
+
+
+def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
+    """主ボーカル + ハモリ副ボイスを合成・ミックスした波形（リミッター前）。
+
+    フレーズ単位で再合成し元の時間軸へ加算配置（10.4）。主ボイスは入力ハッシュで
+    キャッシュ。ハモリ(es['harmonies'])は同じ解析(sp/ap=音色)からピッチシフトで合成し、
+    区間外はゲートで無音化して重ねる。リバーブ・マスターは全ボイス合算後に一括適用。
+    """
+    global_notes = notes_from_json(es.get("notes", []))
+    master = float(es.get("masterGainDb", 0.0))
+
+    parts = _render_primary_parts(sess, global_notes)
+    for h in es.get("harmonies", []) or []:
+        parts += _render_harmony_parts(sess, notes_from_json(h.get("notes", [])))
+
+    total = max([sess.total_samples] + [s + len(y) for s, y in parts])
     out = np.zeros(total, dtype=np.float64)
-    for s, y in rendered:
-        out[s:s + len(y)] += y                        # 元の位置へ加算配置（尾の重なりも安全）
-    out *= 10.0 ** (master / 20.0)                    # マスターゲイン（全体後段）
+    for s, y in parts:
+        out[s:s + len(y)] += y                        # 元の位置へ加算配置
+    out = apply_reverb(out, sess.sample_rate, es.get("reverb"))   # リバーブ（全ミックス後）
+    out *= 10.0 ** (master / 20.0)                    # マスターゲイン
     return out
 
 

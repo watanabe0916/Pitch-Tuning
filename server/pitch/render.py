@@ -347,17 +347,43 @@ def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
     return out
 
 
+def render_gate_envelope(analysis: Analysis, notes, num_samples: int,
+                         edge_sec: float = 0.008) -> np.ndarray:
+    """セグメントの占める区間だけ 1、区間外は 0 のゲート包絡（端は smoothstep）。
+
+    ハモリ等の副ボイスは、コピー元の区間だけを鳴らし他は無音にするために使う。
+    端をなだらかにして境界のクリックを防ぐ。
+    """
+    sr = analysis.sample_rate
+    env = np.zeros(num_samples, dtype=np.float64)
+    for note in notes:
+        for s in note.segments:
+            a = max(0, int(round(s.start_sec * sr)))
+            b = min(num_samples, int(round(s.end_sec * sr)))
+            if b > a:
+                env[a:b] = 1.0
+    w = max(2, int(edge_sec * sr))
+    if w > 1 and env.any():
+        from scipy.signal import fftconvolve
+        k = np.hanning(w); k = k / k.sum()
+        env = np.clip(fftconvolve(env, k, mode="same"), 0.0, 1.0)
+    return env
+
+
 def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0,
-                  reverb: dict = None) -> np.ndarray:
+                  reverb: dict = None, gate: bool = False) -> np.ndarray:
     """編集後のボーカル波形を生成する（信号チェーン 4.2、リミッター前まで）。
 
-    renderF0 → synthesize → renderGain（★リバーブ前段）→ リバーブ → マスターゲイン。
+    renderF0 → synthesize → renderGain（★リバーブ前段）→ [gate] → リバーブ → マスターゲイン。
     セグメントゲインは必ずリバーブより前（AC-10）。マスターゲインはリバーブより後（4.2）。
+    gate=True: セグメント区間外を無音化する（ハモリ等の副ボイス用）。
     """
     out_f0 = render_f0(analysis, notes)
     y = synthesize(analysis, out_f0)
     gain_lin = render_gain(analysis, notes, len(y))
     y = y * gain_lin                              # セグメントゲイン（★リバーブ前）
+    if gate:
+        y = y * render_gate_envelope(analysis, notes, len(y))   # 区間外を無音化
     y = apply_reverb(y, analysis.sample_rate, reverb)   # リバーブ
     y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン（リバーブ後）
     return y

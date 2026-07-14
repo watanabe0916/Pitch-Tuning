@@ -15,12 +15,16 @@ const state = {
   session: null,        // {sessionId, sampleRate, durationSec, hopSec, f0Hz, rmsDb, notes}
   view: null,           // 座標変換 + 描画範囲
   drag: null,           // 進行中のドラッグ {mode, ...}
-  selected: null,       // 選択中セグメント（補正スライダー/M の対象）
+  selected: null,       // 単一選択（補正スライダーの対象。selection.length===1 のとき）
+  selection: [],        // 選択中セグメント配列（範囲選択で複数になりうる）
+  clipboard: null,      // コピーしたバー群
+  marquee: null,        // 範囲選択の矩形 {x0,y0,x1,y1}
   master: 0.0,          // masterGainDb
   reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
   pxPerSec: 260,        // 横ズーム率
   mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
+  aKey: false,          // A キー押下中（追加選択モード）
   rec: null,            // 録音中の状態 {active, stream, ctx, chunks, peak, meterRAF}
   audio: { ctx: null, buffer: null, source: null, playing: false,
            backingSrc: null, vocalGain: null, backingGain: null, startAt: 0 },
@@ -180,6 +184,15 @@ function drawDragFrame() {
     const loc = locateSeg(seg);
     if (loc) drawOneSegment(ctx, state.view, loc.note, seg, loc.i);
   }
+  // 範囲選択の矩形
+  if (state.drag.mode === "marquee") {
+    const d = state.drag;
+    const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+    const w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+    ctx.fillStyle = "rgba(120,180,240,0.15)";
+    ctx.strokeStyle = "rgba(140,190,240,0.9)";
+    ctx.fillRect(x, y, w, h); ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+  }
 }
 
 function locateSeg(seg) {
@@ -238,6 +251,7 @@ function renderScene(ctx, v, skip) {
 // 白い F0 曲線（編集オフセットを反映した表示用の近似）
 function drawF0Curve(ctx, v) {
   const s = state.session, f0 = s.f0Hz, hop = s.hopSec;
+  const primary = s.notes.filter((n) => !n.voice);   // 白い曲線は主ボイスのみ反映
   ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.3;
   ctx.beginPath();
   let pen = false;
@@ -245,7 +259,7 @@ function drawF0Curve(ctx, v) {
     const hz = f0[i];
     if (!(hz > 0)) { pen = false; continue; }
     const t = i * hop;
-    const off = PL.offsetAtTime(s.notes, t);
+    const off = PL.offsetAtTime(primary, t);
     const c = hzToCents(hz) + off;
     const x = v.timeToX(t), y = v.centsToY(c);
     if (!pen) { ctx.moveTo(x, y); pen = true; } else ctx.lineTo(x, y);
@@ -261,8 +275,9 @@ function drawOneSegment(ctx, v, note, s, i) {
   const x0 = v.timeToX(s.startSec), x1 = v.timeToX(s.endSec);
   const w = Math.max(1, x1 - x0);
   const yc = v.centsToY(c), yTop = yc - h / 2, yBot = yc + h / 2;
-  const active = state.drag && state.drag.seg === s;
-  const selected = state.selected === s;
+  const active = state.drag && (state.drag.seg === s ||
+    (state.drag.group && state.drag.group.some((g) => g.seg === s)));
+  const selected = state.selection.indexOf(s) >= 0;
 
   drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop);
 
@@ -274,11 +289,13 @@ function drawOneSegment(ctx, v, note, s, i) {
   } else {
     const fill = PL.gainFillFraction(s.gainDb);
     const fh = h * fill;
-    ctx.fillStyle = active ? "rgba(95,155,240,0.95)"
-      : (selected ? "rgba(88,148,232,0.9)"
-        : (i % 2 ? "rgba(70,120,200,0.72)" : "rgba(80,135,215,0.8)"));
+    const harm = !!note.voice;               // ハモリ副ボイスは橙系で区別
+    ctx.fillStyle = active ? (harm ? "rgba(235,160,80,0.95)" : "rgba(95,155,240,0.95)")
+      : (selected ? (harm ? "rgba(225,150,75,0.9)" : "rgba(88,148,232,0.9)")
+        : (harm ? "rgba(210,140,70,0.78)" : (i % 2 ? "rgba(70,120,200,0.72)" : "rgba(80,135,215,0.8)")));
     ctx.fillRect(x0, yBot - fh, w, fh);
-    ctx.strokeStyle = selected ? "rgba(255,225,130,1)" : "rgba(150,190,240,0.9)";
+    ctx.strokeStyle = selected ? "rgba(255,225,130,1)"
+      : (harm ? "rgba(240,190,120,0.9)" : "rgba(150,190,240,0.9)");
     ctx.lineWidth = selected ? 2 : 1;
     ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
     ctx.lineWidth = 1;
@@ -345,16 +362,29 @@ function replaceNote(oldNote, newNote) {
 }
 
 // ヒットテスト: 分割線(divider) を最優先、次にセグメント本体(body)。
-function hitTest(px, t) {
+// cents が与えられた場合、クリックが **バー本体の縦範囲内** にあるものだけを対象にする。
+// （バーの上下の空白をクリックしても、その時刻のノートを掴まないようにする）
+function hitTest(px, t, cents) {
   const v = state.view;
+  // バー1本の縦の半径（cent）。drawOneSegment の h = max(10, rowHeightPx*0.9) と一致させる。
+  const halfCents = (Math.max(10, v.rowHeightPx * 0.9) / 2) * v.centsPerPixel;
+  const within = (s) => cents == null ||
+    Math.abs((s.baseCents + s.pitchOffsetCents) - cents) <= halfCents;
+
   for (const note of state.session.notes) {
     for (let i = 1; i < note.segments.length; i++) {
-      if (Math.abs(px - v.timeToX(note.segments[i].startSec)) < 6)
+      const s = note.segments[i], p = note.segments[i - 1];
+      if (Math.abs(px - v.timeToX(s.startSec)) < 6 && (within(s) || within(p)))
         return { kind: "divider", note, bi: i };
     }
   }
-  const seg = PL.segAtTime(state.session.notes, t);
-  if (seg) return { kind: "body", note: noteOf(seg), seg };
+  // クリック音高に最も近いバー（主/ハモリが重なっても個別に掴める）
+  if (cents == null) {
+    const seg = PL.segAtTime(state.session.notes, t);
+    return seg ? { kind: "body", note: noteOf(seg), seg } : null;
+  }
+  const seg = PL.segAtPoint(state.session.notes, t, cents);
+  if (seg && within(seg)) return { kind: "body", note: noteOf(seg), seg };
   return null;
 }
 
@@ -386,7 +416,7 @@ function applySnapshot(snap) {
   state.session.notes = o.notes;
   state.master = o.master;
   state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
-  state.selected = null;
+  setSelection([]);   // スナップショットのノートは別オブジェクトなので選択は解除
   // UI 同期
   els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
   els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
@@ -415,42 +445,142 @@ function updateUndoButtons() {
 }
 
 els.grid.addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;                          // 左ボタンのみ
   if (!state.session || state.audio.playing) return;   // 再生中は編集ロック(F-7)
+  e.preventDefault();                                  // テキスト/画像選択を防ぐ（mouseup 取りこぼし対策）
   const rect = els.grid.getBoundingClientRect();
-  const px = e.clientX - rect.left, t = state.view.xToTime(px);
-  const hit = hitTest(px, t);
-  if (!hit) return;
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  const t = state.view.xToTime(px);
+  const hit = hitTest(px, t, state.view.yToCents(py));
+
+  if (!hit) {
+    // 音程バーのない場所で左ドラッグ = 範囲選択（マーキー）
+    state.drag = { mode: "marquee", x0: px, y0: py, x1: px, y1: py, moved: false };
+    if (!(e.shiftKey)) setSelection([]);      // Shift でなければ選択を一旦クリア
+    prepareDragBackground(new Set());          // シーン全体を背景キャッシュ
+    return;
+  }
+
+  if (hit.kind === "body" && state.aKey) {
+    // A + クリック = 選択に追加/解除（ドラッグはしない）
+    const idx = state.selection.indexOf(hit.seg);
+    const ns = state.selection.slice();
+    if (idx >= 0) ns.splice(idx, 1); else ns.push(hit.seg);
+    setSelection(ns);
+    setStatus(ns.length + " 本を選択中");
+    draw();
+    return;
+  }
 
   if (hit.kind === "divider") {
     const seg = hit.note.segments[hit.bi];
     if (e.ctrlKey || e.metaKey) {
-      // Ctrl+分割線ドラッグ = 遷移区間長(transitionInMs)を伸縮（F-3）
       state.drag = { mode: "transition", seg, startX: e.clientX,
                      startTrans: seg.transitionInMs || 40 };
     } else {
-      // 分割線ドラッグ = 分割位置の移動
       state.drag = { mode: "divider", note: hit.note, bi: hit.bi };
     }
   } else {
-    state.selected = hit.seg; syncSliders();
+    // 本体クリック: 既に複数選択に含まれていればグループ操作、そうでなければ単一選択
+    const inSel = state.selection.indexOf(hit.seg) >= 0;
+    const group = inSel ? state.selection.slice() : [hit.seg];
+    if (!inSel) setSelection([hit.seg]);
     if (state.gKey) {
-      // G+縦ドラッグ = 音量(gainDb)（F-4）
-      state.drag = { mode: "gain", seg: hit.seg, startY: e.clientY, startGain: hit.seg.gainDb };
+      // G+縦ドラッグ = 音量（選択全バーに同じ差分を適用）
+      state.drag = { mode: "gain", seg: hit.seg, startY: e.clientY,
+                     group: group.map((s) => ({ seg: s, start: s.gainDb })) };
     } else {
-      // 縦ドラッグ = 音高(pitchOffsetCents)
+      // 縦ドラッグ = 音高（選択全バーに同じ差分を適用）
       state.drag = { mode: "pitch", seg: hit.seg, startY: e.clientY,
-                     startOffset: hit.seg.pitchOffsetCents };
+                     group: group.map((s) => ({ seg: s, start: s.pitchOffsetCents })) };
     }
   }
   state.drag.moved = false;
-  // ドラッグ中に動かすセグメント（これらを除いた背景を1回だけキャッシュ）。
   const live = state.drag.mode === "divider"
     ? [state.drag.note.segments[state.drag.bi - 1], state.drag.note.segments[state.drag.bi]]
-    : [state.drag.seg];
+    : (state.drag.group ? state.drag.group.map((g) => g.seg) : [state.drag.seg]);
   updateSnapLabel(e);
-  draw();                                   // まず通常描画（選択ハイライト等を反映）
-  prepareDragBackground(new Set(live));     // 動かさない部分を背景キャッシュへ
+  draw();
+  prepareDragBackground(new Set(live));
 });
+
+function setSelection(arr) {
+  state.selection = arr;
+  state.selected = arr.length === 1 ? arr[0] : null;
+  syncSliders();
+}
+
+// コピー: 選択バーを親ノート単位でグループ化して保持（ハモリ複製の元）。
+function copySelection() {
+  if (!state.selection.length) return;
+  const byNote = new Map();
+  for (const seg of state.selection) {
+    const note = noteOf(seg);
+    if (!note) continue;
+    if (!byNote.has(note)) byNote.set(note, []);
+    byNote.get(note).push(seg);
+  }
+  state.clipboard = [];
+  for (const [, segs] of byNote) {
+    segs.sort((a, b) => a.startSec - b.startSec);
+    state.clipboard.push({ segments: segs.map((s) => Object.assign({}, s)) });
+  }
+  setStatus(state.selection.length + " 本をコピー（貼りたい音程にカーソルを置いて Cmd/Ctrl+V）");
+}
+
+// ペースト: コピーしたバーを **別ボイス（ハモリ）** として複製する。
+// 開始時間は元のまま。音程は **カーソルの縦位置** に合わせて全体を移調する（自由な音程で配置）。
+function pasteClipboard() {
+  if (!state.clipboard || !state.clipboard.length || !state.session) return;
+  const rect = els.grid.getBoundingClientRect();
+  const cursorCents = state.view.yToCents(state.mouse.clientY - rect.top);
+  // アンカー = コピー群で最も早いバーの絶対音高。これをカーソル音程へ合わせて移調。
+  let anchorCents = 0, anchorStart = Infinity;
+  for (const cn of state.clipboard) for (const s of cn.segments) {
+    if (s.startSec < anchorStart) { anchorStart = s.startSec; anchorCents = s.baseCents + s.pitchOffsetCents; }
+  }
+  const shift = Math.round((cursorCents - anchorCents) / 50) * 50;   // 50cent スナップ
+
+  const voice = nextVoiceId();
+  for (const cn of state.clipboard) {
+    // 各クリップボード項目（＝元の1ノート）を独立した新ノートとして追加する。
+    // voice は同じでも state.session.notes 上は別ノートなので、個別に選択・編集できる。
+    const note = { id: PL.newId(), voice, segments: cn.segments.map((s) => Object.assign({}, s, {
+      id: PL.newId(), pitchOffsetCents: s.pitchOffsetCents + shift,
+    })) };
+    state.session.notes.push(note);
+  }
+  // 貼り付け後は選択を空にする。これで各ハモリノートを個別にクリックして
+  // 単独で動かせる（全選択のまま残すと、1本クリックで全部が一緒に動いてしまう）。
+  setSelection([]);
+  commitEdit(true);
+  setStatus("ハモリを配置（各ノートは個別にクリックして編集できます）");
+}
+
+function nextVoiceId() {
+  let m = 0;
+  for (const n of state.session.notes) if (n.voice && n.voice > m) m = n.voice;
+  return m + 1;
+}
+
+// 選択中の **ハモリ**セグメントを削除（主ボイスは削除不可）。
+function deleteSelectedHarmony() {
+  if (!state.selection.length) return;
+  const del = new Set(state.selection);
+  let removed = 0;
+  for (const note of state.session.notes.slice()) {
+    if (!note.voice) continue;                 // 主ボイスは削除しない
+    const kept = note.segments.filter((s) => !del.has(s));
+    removed += note.segments.length - kept.length;
+    if (kept.length === 0) {
+      const i = state.session.notes.indexOf(note);
+      if (i >= 0) state.session.notes.splice(i, 1);
+    } else {
+      note.segments = kept;
+    }
+  }
+  if (removed) { setSelection([]); commitEdit(true); setStatus("ハモリを削除しました"); }
+}
 
 // マウスの画面座標だけ保持（getBoundingClientRect を毎回呼ぶと強制リフローで重い）。
 // グリッド内 x や時刻は必要になった時だけ計算する。
@@ -462,19 +592,28 @@ window.addEventListener("mousemove", (e) => {
   state.mouse = { clientX: e.clientX, clientY: e.clientY };
   const d = state.drag;
   if (!d) return;
+  // ボタンが離れているのにドラッグが残っている場合は終了（mouseup 取りこぼし対策）。
+  // これで「クリックしていないのにノートが動き続ける」不具合を防ぐ。
+  if (e.buttons === 0) { endDrag(); return; }
   d.moved = true;
   const v = state.view;
 
-  if (d.mode === "pitch") {
+  if (d.mode === "marquee") {
+    const r = els.grid.getBoundingClientRect();
+    d.x1 = e.clientX - r.left; d.y1 = e.clientY - r.top;
+  } else if (d.mode === "pitch") {
     updateSnapLabel(e);
-    d.seg.pitchOffsetCents = PL.computeDragOffset(
-      d.startOffset, e.clientY - d.startY, v.centsPerPixel, mods(e));
+    // 主バーのスナップ済み差分を全選択バーに適用（相対移動）
+    const delta = PL.computeDragOffset(0, e.clientY - d.startY, v.centsPerPixel, mods(e));
+    for (const g of d.group) g.seg.pitchOffsetCents = g.start + delta;
   } else if (d.mode === "gain") {
     // 行1つ(=100cent高)を 24dB 相当にマップ。0.5dB スナップ。
     const dbPerPx = 24 / v.rowHeightPx;
-    let g = d.startGain - (e.clientY - d.startY) * dbPerPx;
-    g = Math.max(PL.GAIN_FILL_MIN_DB, Math.min(PL.GAIN_FILL_MAX_DB, Math.round(g * 2) / 2));
-    d.seg.gainDb = g; d.seg.mute = false;
+    let delta = Math.round((-(e.clientY - d.startY) * dbPerPx) * 2) / 2;
+    for (const g of d.group) {
+      const gv = Math.max(PL.GAIN_FILL_MIN_DB, Math.min(PL.GAIN_FILL_MAX_DB, g.start + delta));
+      g.seg.gainDb = gv; g.seg.mute = false;
+    }
   } else if (d.mode === "divider") {
     const t = mouseTime();
     const segs = d.note.segments, minL = 0.02;
@@ -489,13 +628,26 @@ window.addEventListener("mousemove", (e) => {
   scheduleDraw();   // rAF で間引いて再描画（他タブが重くならないように）
 });
 
-window.addEventListener("mouseup", () => {
+function endDrag() {
   const d = state.drag;
   if (!d) return;
   state.drag = null;
+  if (d.mode === "marquee") {
+    const v = state.view;
+    if (d.moved) {
+      const sel = PL.segmentsInRect(
+        state.session.notes, v.xToTime(d.x0), v.xToTime(d.x1),
+        v.yToCents(d.y0), v.yToCents(d.y1));
+      setSelection(sel);
+      setStatus(sel.length + " 本のバーを選択");
+    }
+    draw();
+    return;   // 選択は編集ではないので再合成しない
+  }
   draw();
   commitEdit(d.moved);
-});
+}
+window.addEventListener("mouseup", endDrag);
 
 // 分割線ダブルクリック = 結合（F-2）
 els.grid.addEventListener("dblclick", (e) => {
@@ -505,7 +657,7 @@ els.grid.addEventListener("dblclick", (e) => {
   const hit = hitTest(px, t);
   if (hit && hit.kind === "divider") {
     replaceNote(hit.note, PL.mergeNote(hit.note, hit.bi));
-    state.selected = null; syncSliders();
+    setSelection([]);
     commitEdit(true);
   }
 });
@@ -521,8 +673,25 @@ window.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && (e.key === "y" || e.key === "Y")) {
     e.preventDefault(); if (state.session && !state.audio.playing) redo(); return;
   }
+  // コピー/ペースト（音程バー）
+  if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C")) {
+    if (state.session && state.selection.length) { e.preventDefault(); copySelection(); }
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V")) {
+    if (state.session && !state.audio.playing) { e.preventDefault(); pasteClipboard(); }
+    return;
+  }
+  // Delete/Backspace: 選択中のハモリを削除
+  if (e.key === "Delete" || e.key === "Backspace") {
+    if (state.session && !state.audio.playing && state.selection.length) {
+      e.preventDefault(); deleteSelectedHarmony();
+    }
+    return;
+  }
   if (state.drag) updateSnapLabel(e);
   if (e.key === "g" || e.key === "G") state.gKey = true;
+  if ((e.key === "a" || e.key === "A") && !e.metaKey && !e.ctrlKey) state.aKey = true;
   if (!state.session || state.audio.playing || !state.view) return;
   const t = mouseTime();
   if (e.key === "s" || e.key === "S") {
@@ -533,28 +702,37 @@ window.addEventListener("keydown", (e) => {
       commitEdit(true);
     }
   } else if (e.key === "m" || e.key === "M") {
-    const seg = state.selected || PL.segAtTime(state.session.notes, t);
-    if (seg) { seg.mute = !seg.mute; commitEdit(true); }
+    // 選択があれば全バーをまとめてミュート切替、なければカーソル下のバー
+    let targets = state.selection.length ? state.selection.slice() : [];
+    if (!targets.length) { const s = PL.segAtTime(state.session.notes, t); if (s) targets = [s]; }
+    if (targets.length) {
+      const muteAll = targets.some((s) => !s.mute);   // 1つでも鳴っていれば全ミュート
+      for (const s of targets) s.mute = muteAll;
+      commitEdit(true);
+    }
   }
 });
 window.addEventListener("keyup", (e) => {
   if (e.key === "g" || e.key === "G") state.gKey = false;
+  if (e.key === "a" || e.key === "A") state.aKey = false;
   if (state.drag) updateSnapLabel(e);
 });
 
 // --- 補正スライダー / マスターフェーダー ---
 function syncSliders() {
-  const s = state.selected;
-  els.strength.disabled = !s;
-  els.strength.value = s ? s.correctStrength : 0;
-  els.strengthval.textContent = s ? Number(s.correctStrength).toFixed(2) : "–";
+  const n = state.selection.length;
+  els.strength.disabled = n === 0;
+  const val = n ? state.selection[0].correctStrength : 0;
+  els.strength.value = val;
+  els.strengthval.textContent = n ? Number(val).toFixed(2) : "–";
 }
 els.strength.addEventListener("input", () => {
-  if (!state.selected) return;
-  state.selected.correctStrength = parseFloat(els.strength.value);
-  els.strengthval.textContent = state.selected.correctStrength.toFixed(2);
+  if (!state.selection.length) return;
+  const v = parseFloat(els.strength.value);
+  for (const s of state.selection) s.correctStrength = v;   // 選択全バーに適用
+  els.strengthval.textContent = v.toFixed(2);
 });
-els.strength.addEventListener("change", () => { if (state.selected) commitEdit(true); });
+els.strength.addEventListener("change", () => { if (state.selection.length) commitEdit(true); });
 els.master.addEventListener("input", () => {
   state.master = parseFloat(els.master.value);
   els.masterval.textContent = state.master.toFixed(1) + "dB";
@@ -608,7 +786,7 @@ els.projfile.addEventListener("change", async (e) => {
     state.reverb = es.reverb || { mix: 0, decaySec: 1.2 };
     els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
     els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
-    state.selected = null; syncSliders();
+    setSelection([]); state.clipboard = null;
     initUndo(); draw(); state.dirty = true; renderAndLoad(false);
     setStatus("プロジェクトを読み込みました");
   } catch (err) { setStatus("プロジェクト読込エラー: " + err.message); }
@@ -646,6 +824,7 @@ els.file.addEventListener("change", async (e) => {
     els.export.disabled = false;
     els.bfile.disabled = false;   // 伴奏追加を有効化
     els.zoomin.disabled = els.zoomout.disabled = els.projsave.disabled = false;
+    setSelection([]); state.clipboard = null;   // 選択・クリップボードをリセット
     initUndo();                   // アンドゥ履歴を初期化
     await renderAndLoad(false);   // 初期プレビューを用意
   } catch (err) {
@@ -654,7 +833,14 @@ els.file.addEventListener("change", async (e) => {
 });
 
 function buildEditState() {
-  const es = { notes: state.session.notes, masterGainDb: state.master };
+  // 主ボイス(voice 未設定)とハモリ(voice≥1)を分離して送る
+  const all = state.session.notes;
+  const primary = all.filter((n) => !n.voice);
+  const voices = {};
+  for (const n of all) if (n.voice) (voices[n.voice] = voices[n.voice] || []).push(n);
+  const es = { notes: primary, masterGainDb: state.master };
+  const harms = Object.values(voices);
+  if (harms.length) es.harmonies = harms.map((notes) => ({ notes }));
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
   if (state.backing) es.backing = {
     offsetSec: state.backing.offsetSec, gainDb: state.backing.gainDb,
@@ -958,7 +1144,7 @@ function setTransportPlaying(playing) {
   els.grid.classList.toggle("locked", playing);
   els.stop.disabled = !playing;
   els.master.disabled = playing;
-  els.strength.disabled = playing || !state.selected;
+  els.strength.disabled = playing || !state.selection.length;
   els.reverb.disabled = playing;
   els.export.disabled = playing || !state.session;
   els.projfile.disabled = playing;

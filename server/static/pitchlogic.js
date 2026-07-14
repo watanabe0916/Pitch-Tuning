@@ -49,6 +49,19 @@
     return s ? s.pitchOffsetCents : 0;
   }
 
+  // 時刻 t を含むセグメントのうち、音高が cents に最も近いものを返す。
+  // ハモリ(副ボイス)が主ボイスと時間的に重なっても、個別に掴めるようにする。
+  function segAtPoint(notes, t, cents) {
+    let best = null, bestD = Infinity;
+    for (const n of notes) for (const s of n.segments) {
+      if (t >= s.startSec && t < s.endSec) {
+        const d = Math.abs((s.baseCents + s.pitchOffsetCents) - cents);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+    }
+    return best;
+  }
+
   // 描画範囲(cent)を全セグメントの音高から決める（± マージン、100cent 丸め）。
   function pitchRange(notes, marginCents) {
     let lo = Infinity, hi = -Infinity;
@@ -141,6 +154,34 @@
     return transport === "stopped" || transport === "dirty";
   }
 
+  // 範囲選択（マーキー）: 矩形 [t0,t1]×[cLo,cHi] に重なるセグメントを返す。
+  function segmentsInRect(notes, t0, t1, cLo, cHi) {
+    const lo = Math.min(t0, t1), hi = Math.max(t0, t1);
+    const clo = Math.min(cLo, cHi), chi = Math.max(cLo, cHi);
+    const sel = [];
+    for (const n of notes) for (const s of n.segments) {
+      const c = s.baseCents + s.pitchOffsetCents;
+      if (s.startSec < hi && s.endSec > lo && c >= clo && c <= chi) sel.push(s);
+    }
+    return sel;
+  }
+
+  // ペースト用: note を時刻 a, b で分割し、[a,b] を占める1セグメントを切り出す。
+  // 戻り値 { note: 新Note, seg: 対象セグメント } または対象外なら null。
+  function carveSegment(note, a, b) {
+    const segs0 = note.segments;
+    a = Math.max(a, segs0[0].startSec);
+    b = Math.min(b, segs0[segs0.length - 1].endSec);
+    if (!(b > a + 1e-6)) return null;
+    let nn = note;
+    let idx = nn.segments.findIndex((s) => a > s.startSec + 1e-6 && a < s.endSec - 1e-6);
+    if (idx >= 0) nn = splitNote(nn, idx, a);
+    idx = nn.segments.findIndex((s) => b > s.startSec + 1e-6 && b < s.endSec - 1e-6);
+    if (idx >= 0) nn = splitNote(nn, idx, b);
+    const seg = nn.segments.find((s) => s.startSec >= a - 1e-6 && s.endSec <= b + 1e-6);
+    return seg ? { note: nn, seg } : null;
+  }
+
   // 分割線の移動: seg[i-1].endSec と seg[i].startSec を同時に t へ（最小長でクランプ）。
   function moveDivider(note, boundaryIndex, tSec, minLenSec) {
     const i = boundaryIndex, segs = note.segments;
@@ -156,9 +197,10 @@
 
   return { A4_CENTS, hzToCents, centsToHz, isBlackKey, centsToName,
            snapStep, snapCents, computeDragOffset,
-           segAtTime, offsetAtTime, pitchRange, makeTransforms,
+           segAtTime, segAtPoint, offsetAtTime, pitchRange, makeTransforms,
            newId, gainFillFraction, fillFractionToGainDb,
            GAIN_FILL_MAX_DB, GAIN_FILL_MIN_DB, FINE_SNAP_CENTS,
            splitNote, mergeNote, moveDivider,
-           computePlaybackSchedule, canEdit };
+           computePlaybackSchedule, canEdit,
+           segmentsInRect, carveSegment };
 });
