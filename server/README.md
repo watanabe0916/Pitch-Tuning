@@ -7,6 +7,7 @@ CLAUDE.md の仕様に基づく実装。
 - **Phase 4**: 分割/結合/遷移区間/セグメント音量の UI（AC-6、遷移帯・塗り高さの可視化）
 - **Phase 5**: 書き出し（`/api/export`）+ ダウンロード UI + トゥルーピーク・リミッター（AC-15/16/21）
 - **Phase 6**: 伴奏トラック（アップロード・同時再生・再生中の編集ロック・ミックス書き出し、AC-17〜20）
+- **Phase 7**: 録音（AudioWorklet で生 PCM・前処理無効化・レベルメーター、アカペラのみ、AC-11〜14）
 
 ## セットアップ
 
@@ -228,7 +229,35 @@ python -m pytest tests/test_phase6.py -v    # AC-17 + 伴奏バックエンド
 node tests/test_pitchlogic.js               # AC-18/19（+ 既存 50 超）
 ```
 
-## 次のステップ（Phase 7〜8）
+## Phase 7: 録音（アカペラ）
 
-録音（AudioWorklet・前処理無効化）、リバーブ、マスターフェーダー、
-アンドゥ、ズーム、プロジェクト保存。
+- **前処理を全無効化**（11.1）: `getUserMedia({audio:{echoCancellation:false,
+  noiseSuppression:false, autoGainControl:false, channelCount:1}})`。
+  取得後 `getSettings()` を検査し、前処理が残っていれば警告（AC-11）。
+- **`MediaRecorder` は使わない**（WebM/Opus 非可逆）。`recorder-worklet.js`（AudioWorklet）で
+  生 Float32 PCM を取得し、`encodeWavFloat32` で **32bit float WAV** にして
+  ファイル読み込みと同じ `/api/session` へ流す（11.2 / AC-12）。
+- **サンプルレートは決め打ちしない**: `ctx.sampleRate` を実測して使う（11.3）。
+- **レベルメーター**（11.4）: 目標 -12dBFS、0dBFS 到達で赤クリップ警告（AC-14）。
+- 権限拒否時はファイル読み込みへ誘導（11.7）。localhost は HTTPS 例外。
+
+純粋ロジック（WAV エンコード・制約検査・メーター）は `reclogic.js` に集約。
+
+### Phase 7 検証（AC）
+
+| AC | 内容 | 検証 |
+|----|------|------|
+| AC-11 | 前処理3種が false（残れば警告）| `checkAudioConstraints` 単体 ✅ |
+| AC-12 | 非圧縮 PCM(float32)・非 Opus/AAC | WAV fmt=3/32bit ✅ |
+| AC-13 | 録音 PCM がサーバーでビット一致 | Node生成WAV→soundfile復元が **bit-exact** ✅ |
+| AC-14 | 0dBFS 到達で警告 | `meterFromPeak(≥1.0).clip` ✅ |
+
+```bash
+node tests/test_reclogic.js          # AC-11/12/14
+python -m pytest tests/test_phase7.py # AC-12/13（ブラウザWAV→サーバ復元）
+```
+
+## 次のステップ（Phase 8〜9）
+
+リバーブ、マスターフェーダー、アンドゥ、ズーム、プロジェクト保存（AC-9/10）、
+フレーズ自動分割・テイク管理・レイテンシ補正（長尺対応）。

@@ -19,6 +19,7 @@ const state = {
   master: 0.0,          // masterGainDb
   mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
+  rec: null,            // 録音中の状態 {active, stream, ctx, chunks, peak, meterRAF}
   audio: { ctx: null, buffer: null, source: null, playing: false,
            backingSrc: null, vocalGain: null, backingGain: null, startAt: 0 },
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
@@ -51,7 +52,13 @@ const els = {
   bremove: document.getElementById("bremove"),
   playhead: document.getElementById("playhead"),
   bplayhead: document.getElementById("bplayhead"),
+  record: document.getElementById("record"),
+  meter: document.getElementById("meter"),
+  meterbar: document.getElementById("meterbar"),
+  meterlabel: document.getElementById("meterlabel"),
 };
+
+const RL = window.RecLogic;
 
 const setStatus = (msg) => { els.status.textContent = msg; };
 
@@ -614,6 +621,84 @@ els.grid.parentElement.addEventListener("scroll", () => {
 els.bcanvas.parentElement.addEventListener("scroll", () => {
   els.grid.parentElement.scrollLeft = els.bcanvas.parentElement.scrollLeft;
 });
+
+// ==========================================================================
+// 録音（AudioWorklet で生 PCM を取得・11章。アカペラのみ）
+// ==========================================================================
+els.record.addEventListener("click", () => {
+  if (state.rec && state.rec.active) stopRecording(); else startRecording();
+});
+
+async function startRecording() {
+  if (state.audio.playing) stopAudio();
+  try {
+    // 11.1: 通話向け前処理をすべて無効化してマイクを取得
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: RL.AUDIO_CONSTRAINTS });
+    const track = stream.getAudioTracks()[0];
+    const warns = RL.checkAudioConstraints(track.getSettings ? track.getSettings() : {});
+    if (warns.length) setStatus("⚠ 前処理が有効: " + warns.join(" / ") + "（品質が落ちます）");
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+    await ctx.audioWorklet.addModule("/static/recorder-worklet.js");   // 11.2
+    const src = ctx.createMediaStreamSource(stream);
+    const node = new AudioWorkletNode(ctx, "rec-processor");
+    // 無音のゲインを介して destination へ繋ぐ（process を回すため。モニタはしない）
+    const silent = ctx.createGain(); silent.gain.value = 0;
+    src.connect(node); node.connect(silent); silent.connect(ctx.destination);
+
+    const chunks = [];
+    state.rec = { active: true, stream, ctx, node, chunks, peak: 0, meterRAF: 0 };
+    node.port.onmessage = (e) => {
+      const d = e.data; chunks.push(d);
+      let p = 0; for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > p) p = a; }
+      state.rec.peak = p;
+    };
+
+    els.record.classList.add("on"); els.record.textContent = "■ 録音停止";
+    els.meter.hidden = false;
+    setStatus("録音中… ピークが -12dBFS 付近になるように（0dBFS でクリップ）");
+    startMeter();
+  } catch (err) {
+    // 11.7: 権限拒否時はファイル読み込みへ誘導
+    setStatus("マイクを使用できません（" + err.message + "）。「音声を開く」から読み込んでください。");
+  }
+}
+
+async function stopRecording() {
+  const r = state.rec;
+  if (!r || !r.active) return;
+  r.active = false;
+  cancelAnimationFrame(r.meterRAF);
+  const samples = RL.concatFloat32(r.chunks);
+  const sr = r.ctx.sampleRate;         // 11.3: 実際の SR を使う
+  try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+  try { await r.ctx.close(); } catch (_) {}
+  state.rec = null;
+  els.record.classList.remove("on"); els.record.textContent = "● 録音";
+  els.meter.hidden = true;
+
+  if (!samples.length) { setStatus("録音が空でした"); return; }
+  // 32bit float WAV へエンコード → ファイル読み込みと同じ /api/session 経路へ流す（11章）
+  const wav = RL.encodeWavFloat32(samples, sr);
+  const file = new File([new Blob([wav], { type: "audio/wav" })], "recording.wav", { type: "audio/wav" });
+  const dt = new DataTransfer(); dt.items.add(file);
+  els.file.files = dt.files;
+  els.file.dispatchEvent(new Event("change"));
+}
+
+function startMeter() {
+  const render = () => {
+    if (!state.rec || !state.rec.active) return;
+    const m = RL.meterFromPeak(state.rec.peak);
+    const norm = Math.max(0, Math.min(1, (m.db + 48) / 48));   // -48..0 dBFS
+    els.meterbar.style.width = (norm * 100) + "%";
+    els.meterbar.style.background = m.clip ? "#ff4d4d" : (m.hot ? "#e0b33a" : "#5ac06c");
+    els.meterlabel.textContent = isFinite(m.db) ? Math.round(m.db) + "dB" : "-∞";
+    if (m.clip) setStatus("⚠ クリップ検出（0dBFS）! 入力レベルを下げてください");   // AC-14
+    state.rec.meterRAF = requestAnimationFrame(render);
+  };
+  state.rec.meterRAF = requestAnimationFrame(render);
+}
 
 // ==========================================================================
 // 書き出し（/api/export）+ ダウンロード（13.3）
