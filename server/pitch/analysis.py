@@ -21,7 +21,11 @@ from .pitchmath import hz_to_cents
 
 @dataclass
 class Analysis:
-    """解析結果（読み取り専用・不変）。編集操作はこれを書き換えない。"""
+    """解析結果（読み取り専用・不変）。編集操作はこれを書き換えない。
+
+    sp/ap は Phase 2 の再合成で使う（声質。編集しない）。サイズが大きく
+    サーバー常駐前提のため、F0 のみ必要な用途では None のままにできる。
+    """
 
     sample_rate: int
     hop_sec: float          # F0 フレーム間隔（既定 5ms）
@@ -29,11 +33,18 @@ class Analysis:
     voiced: np.ndarray      # shape=(F,), uint8, 1 = 有声
     times: np.ndarray       # shape=(F,), 各フレームの中心時刻 [sec]
     rms_db: np.ndarray      # shape=(F,), 振幅包絡線 [dBFS]（音量表示用）
+    spectral_envelope: np.ndarray = None  # WORLD sp, shape=(F, fft//2+1)。声質
+    aperiodicity: np.ndarray = None       # WORLD ap, shape=(F, fft//2+1)
+    fft_size: int = 0
 
     @property
     def f0_cents(self) -> np.ndarray:
         """F0 を cent へ変換した配列（無声フレームは NaN）。"""
         return hz_to_cents(self.f0_hz, unvoiced_value=np.nan)
+
+    @property
+    def frame_period_ms(self) -> float:
+        return self.hop_sec * 1000.0
 
 
 def estimate_f0(
@@ -75,6 +86,32 @@ def estimate_f0(
         times=np.asarray(t, dtype=np.float64),
         rms_db=rms_db,
     )
+
+
+def analyze(
+    samples: np.ndarray,
+    sample_rate: int,
+    hop_sec_target: float = 0.005,
+    fmin_hz: float = 65.0,
+    fmax_hz: float = 1100.0,
+) -> Analysis:
+    """完全な WORLD 解析: F0 + sp(cheaptrick) + ap(d4c)。
+
+    再合成 (Phase 2) はこの sp/ap を保持したまま f0 のみ差し替える（4.1）。
+    sp は cheaptrick が推定した f0 に依存するため、必ず**元の f0** で計算する。
+    """
+    a = estimate_f0(samples, sample_rate, hop_sec_target, fmin_hz, fmax_hz)
+    x = np.ascontiguousarray(samples, dtype=np.float64)
+    t = a.times
+
+    sp = pw.cheaptrick(x, a.f0_hz, t, sample_rate)   # スペクトル包絡 = 声質
+    ap = pw.d4c(x, a.f0_hz, t, sample_rate)           # 非周期性成分
+    fft_size = (sp.shape[1] - 1) * 2
+
+    a.spectral_envelope = np.ascontiguousarray(sp, dtype=np.float64)
+    a.aperiodicity = np.ascontiguousarray(ap, dtype=np.float64)
+    a.fft_size = int(fft_size)
+    return a
 
 
 def _windowed_rms(x: np.ndarray, sr: int, times: np.ndarray,

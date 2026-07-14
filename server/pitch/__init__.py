@@ -6,8 +6,9 @@ CLAUDE.md の仕様に対応。
 
 from .pitchmath import hz_to_cents, cents_to_hz, A4_CENTS
 from .audio_io import load_audio, LoadedAudio
-from .analysis import estimate_f0, Analysis
+from .analysis import estimate_f0, analyze, Analysis
 from .segmentation import segment_notes, Note, Segment
+from .render import render_f0, render_gain, synthesize, render_output
 
 __all__ = [
     "hz_to_cents",
@@ -16,8 +17,13 @@ __all__ = [
     "load_audio",
     "LoadedAudio",
     "estimate_f0",
+    "analyze",
     "Analysis",
     "segment_notes",
     "Note",
     "Segment",
+    "render_f0",
+    "render_gain",
+    "synthesize",
+    "render_output",
 ]
