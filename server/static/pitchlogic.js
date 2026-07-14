@@ -69,7 +69,67 @@
     };
   }
 
+  // --- 編集操作（分割・結合・ゲイン）: 純粋関数で持ちテスト可能にする ---
+
+  let _idCounter = 0;
+  function newId() { return "s" + (Date.now().toString(36)) + (_idCounter++).toString(36); }
+
+  function cloneSeg(s) { return Object.assign({}, s); }
+
+  // セグメント上端ドラッグ用: gainDb → 塗り高さ比率（6.3）。
+  // 0dB=1.0(行いっぱい), -12dB=0.5(半分), +12dB=1.5(はみ出す)。
+  const GAIN_FILL_MAX_DB = 12, GAIN_FILL_MIN_DB = -24;
+  function gainFillFraction(gainDb) {
+    return Math.max(0, Math.min(2, 1 + gainDb / 24));
+  }
+  function fillFractionToGainDb(frac) {
+    const db = (Math.max(0, Math.min(2, frac)) - 1) * 24;
+    return Math.max(GAIN_FILL_MIN_DB, Math.min(GAIN_FILL_MAX_DB, db));
+  }
+
+  // 分割(F-2): note.segments[i] を時刻 t で 2 分割する（非破壊: 新配列を返す）。
+  // 分割された 2 セグメントは独立した pitchOffsetCents / gainDb を持てる。
+  function splitNote(note, i, tSec) {
+    const seg = note.segments[i];
+    if (!(tSec > seg.startSec && tSec < seg.endSec)) return note;  // 範囲外は無視
+    const left = cloneSeg(seg), right = cloneSeg(seg);
+    left.id = newId(); right.id = newId();
+    left.endSec = tSec; right.startSec = tSec;
+    if (right.transitionInMs == null) right.transitionInMs = 40;
+    const segs = note.segments.slice();
+    segs.splice(i, 1, left, right);
+    return Object.assign({}, note, { segments: segs });
+  }
+
+  // 結合(F-2): 分割線(i と i-1 の境界)で 2 セグメントを1つに。
+  function mergeNote(note, boundaryIndex) {
+    const i = boundaryIndex;             // seg[i-1] と seg[i] を結合
+    if (i < 1 || i >= note.segments.length) return note;
+    const a = note.segments[i - 1], b = note.segments[i];
+    const merged = cloneSeg(a);
+    merged.id = newId(); merged.endSec = b.endSec;
+    const segs = note.segments.slice();
+    segs.splice(i - 1, 2, merged);
+    return Object.assign({}, note, { segments: segs });
+  }
+
+  // 分割線の移動: seg[i-1].endSec と seg[i].startSec を同時に t へ（最小長でクランプ）。
+  function moveDivider(note, boundaryIndex, tSec, minLenSec) {
+    const i = boundaryIndex, segs = note.segments;
+    if (i < 1 || i >= segs.length) return note;
+    const minL = minLenSec == null ? 0.02 : minLenSec;
+    const lo = segs[i - 1].startSec + minL, hi = segs[i].endSec - minL;
+    const t = Math.max(lo, Math.min(hi, tSec));
+    const ns = segs.slice();
+    ns[i - 1] = Object.assign({}, ns[i - 1], { endSec: t });
+    ns[i] = Object.assign({}, ns[i], { startSec: t });
+    return Object.assign({}, note, { segments: ns });
+  }
+
   return { A4_CENTS, hzToCents, centsToHz, isBlackKey, centsToName,
            snapStep, snapCents, computeDragOffset, segAtTime, offsetAtTime,
-           pitchRange, makeTransforms };
+           pitchRange, makeTransforms,
+           newId, gainFillFraction, fillFractionToGainDb,
+           GAIN_FILL_MAX_DB, GAIN_FILL_MIN_DB,
+           splitNote, mergeNote, moveDivider };
 });

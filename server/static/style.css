@@ -23,8 +23,16 @@ button:disabled { opacity: 0.4; cursor: default; }
 button:not(:disabled):hover { background: #3a4150; }
 .sep { flex: 0 0 1px; height: 22px; background: #444; }
 .snaplabel, .hint { font-size: 12px; color: #9aa0aa; }
+.slider { font-size: 12px; color: #9aa0aa; display: flex; align-items: center; gap: 6px; }
+.slider input[type=range] { width: 90px; }
+.slider span { min-width: 34px; color: #cdd2da; }
 #snap { color: #6cc06c; font-weight: 600; }
 .status { margin-left: auto; font-size: 12px; color: #9aa0aa; }
+.hintbar {
+  padding: 5px 14px; background: #1e222a; border-bottom: 1px solid #2c313a;
+  font-size: 11px; color: #8b919c;
+}
+.hintbar b { color: #cdd2da; }
 
 .editor { position: relative; flex: 1; display: flex; overflow: hidden; min-height: 0; }
 /* canvas をラッパで absolute 配置し、canvas の固有アスペクト比が

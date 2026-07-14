@@ -57,4 +57,43 @@ const r = PL.pitchRange(notes);
 ok("pitchRange が全音高を含む", r.lo <= 6000 && r.hi >= 6750);
 ok("pitchRange は100cent丸め", r.lo % 100 === 0 && r.hi % 100 === 0);
 
+// --- AC-6: 50cent スナップが有効なとき pitchOffsetCents % 50 == 0 ---
+for (let dy = -50; dy <= 50; dy += 1.3) {
+  const off = PL.computeDragOffset(0, dy, 7.7, {});   // 既定=50cent スナップ
+  if (off % 50 !== 0) { throw new Error("AC-6 違反: offset=" + off); }
+}
+ok("AC-6: 50centスナップで offset%50==0 が常に成立", true);
+
+// --- 分割 (F-2) ---
+const n0 = { id: "n", segments: [
+  { id: "a", startSec: 0, endSec: 1.0, baseCents: 6000, pitchOffsetCents: 100 } ] };
+const s1 = PL.splitNote(n0, 0, 0.4);
+ok("分割で2セグメントになる", s1.segments.length === 2);
+ok("分割: 左の終端=分割点", s1.segments[0].endSec === 0.4);
+ok("分割: 右の始端=分割点", s1.segments[1].startSec === 0.4);
+ok("分割: 元のオフセットを引き継ぐ", s1.segments[1].pitchOffsetCents === 100);
+ok("分割: IDが別々", s1.segments[0].id !== s1.segments[1].id);
+const s2 = PL.splitNote(s1, 1, 0.7);   // 再帰分割
+ok("再帰分割で3セグメント", s2.segments.length === 3);
+ok("範囲外の分割時刻は無視", PL.splitNote(n0, 0, 5.0).segments.length === 1);
+
+// --- 結合 (F-2) ---
+const m = PL.mergeNote(s2, 1);
+ok("結合で2セグメントに戻る", m.segments.length === 2);
+ok("結合: 終端が引き継がれる", m.segments[0].endSec === s2.segments[1].endSec);
+
+// --- 分割線の移動 ---
+const mv = PL.moveDivider(s1, 1, 0.6, 0.02);
+ok("分割線移動: 左終端が動く", Math.abs(mv.segments[0].endSec - 0.6) < 1e-9);
+ok("分割線移動: 右始端が同期", Math.abs(mv.segments[1].startSec - 0.6) < 1e-9);
+const mvc = PL.moveDivider(s1, 1, 0.999, 0.02);   // 最小長でクランプ
+ok("分割線移動: 最小長でクランプ", mvc.segments[1].endSec - mvc.segments[1].startSec >= 0.02 - 1e-9);
+
+// --- ゲイン塗り高さ (6.3) ---
+ok("0dB → 塗り比 1.0", near(PL.gainFillFraction(0), 1.0));
+ok("-12dB → 塗り比 0.5(半分)", near(PL.gainFillFraction(-12), 0.5));
+ok("+12dB → 塗り比 1.5(はみ出す)", near(PL.gainFillFraction(12), 1.5));
+ok("塗り比↔gainDb 往復", near(PL.fillFractionToGainDb(PL.gainFillFraction(6)), 6));
+ok("gainDb は +12 でクランプ", PL.fillFractionToGainDb(3.0) === 12);
+
 console.log(`\n${pass} checks passed`);
