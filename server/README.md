@@ -1,6 +1,5 @@
 # ボーカル・ピッチエディタ — サーバー側（解析・再合成）
 
-CLAUDE.md の仕様に基づく実装。
 - **Phase 1**: F0 推定 + ノート自動分割
 - **Phase 2**: renderF0/renderGain + WORLD 再合成（AC-1〜5/7/8）
 - **Phase 3**: Web UI（Canvas ピアノロール・縦ドラッグ・50cent スナップ）+ `/api/session`・`/api/render`
@@ -11,9 +10,9 @@ CLAUDE.md の仕様に基づく実装。
 - **Phase 8**: リバーブ・マスターフェーダー・アンドゥ・ズーム・プロジェクト保存（AC-9/10）
 - **Phase 9**: フレーズ自動分割（長尺対応）— 無音でのみ分割・フレーズ単位で解析/再合成キャッシュ
 
-## クイックスタート（フォークした人向け・推奨）
+## クイックスタート
 
-**conda は不要。** Python 3.9+ さえあれば、リポジトリ直下で次の2ステップだけで動く。
+Python 3.9+ さえあれば、リポジトリ直下で次の2ステップで動く。
 
 ```bash
 ./setup.sh        # 初回のみ: .venv を作り依存を pip で入れる（数分）
@@ -27,27 +26,14 @@ CLAUDE.md の仕様に基づく実装。
   Xcode Command Line Tools（mac）や build-essential（Linux）が必要。
 - Windows/Linux は `.command` の代わりに `source .venv/bin/activate && cd server && uvicorn app:app --port 8000`。
 
-> 補足: F0 推定は当初 librosa(pyin) を想定していたが、依存の numba/llvmlite が LLVM ビルドを
-> 要して重いため、**WORLD Harvest** に一本化した（`pyworld` は Phase 2 の再合成でも使う）。
-> `setuptools<81` を固定しているのは、pyworld が実行時に `pkg_resources` を import するため
-> （setuptools 81 で削除された。Python 3.12 の venv には setuptools 自体が既定で入らない）。
-
-### （旧）conda を使う場合
-
-以前は conda env で開発していた。conda の classic solver は非常に遅いのでパッケージは pip で入れる。
-conda 固有の機能は使っておらず、上の venv 版と等価。
-
-```bash
-conda create -y -n pitch python=3.10
-conda activate pitch
-pip install -r server/requirements.txt
-```
+F0 推定と再合成には **WORLD（`pyworld`）** を使う。依存は `server/requirements.txt`
+（numpy / scipy / soundfile / pyworld / fastapi / uvicorn ほか）。
 
 ## Phase 1 の実行
 
 ```bash
+source .venv/bin/activate
 cd server
-conda activate pitch
 
 # 検証用の合成歌声を生成（ground truth の音符列 JSON も出力）
 python scripts/make_test_audio.py --out out/test_vocal.wav
@@ -84,7 +70,7 @@ server/
 ## Phase 2 の実行とテスト
 
 ```bash
-cd server && conda activate pitch
+source .venv/bin/activate && cd server
 # 編集後ボーカルを書き出す（コード直書きの編集を適用）
 python scripts/phase2_demo.py out/test_vocal.wav
 #   → out/test_vocal_tuned.wav（編集後） / _baseline.wav（無編集再合成）
@@ -133,7 +119,7 @@ python -m pytest tests/test_phase2.py -v -s
 ## Phase 3: Web UI とサーバー
 
 ```bash
-cd server && conda activate pitch
+source .venv/bin/activate && cd server
 uvicorn app:app --reload --port 8000
 # → ブラウザで http://localhost:8000/
 #   「音声を開く」で WAV/FLAC/AIFF を読み込み → ピアノロールにノート表示
