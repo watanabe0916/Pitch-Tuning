@@ -1275,7 +1275,8 @@ async function startRecording() {
     const chunks = [];
     state.rec = { active: true, mode, stream, ctx, node, chunks,
                   peak: 0, meterRAF: 0, monitorT0, monGains,
-                  firstChunkTime: 0, firstChunkLen: 0 };
+                  firstChunkTime: 0, firstChunkLen: 0,
+                  t0ms: performance.now(), maxDb: -Infinity };
     node.port.onmessage = (e) => {
       const r = state.rec;
       if (!r) return;
@@ -1316,6 +1317,26 @@ async function stopRecording() {
     const trim = Math.round(((r.monitorT0 - chunk0Start) + latency) * sr);
     if (trim > 0 && trim < samples.length) samples = samples.subarray(trim);
   }
+  // 入力レベルの自動補正: AGC 無効（11.1）のため録音が小さくなりがち。
+  // ピークが -18dBFS を下回ったらピーク -12dBFS までデジタルブースト（上限 +24dB）。
+  // 注意: SNR は変わらない（ノイズも同量上がる）。根本対策は OS の入力音量を上げること。
+  let boostDb = 0;
+  {
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const a = Math.abs(samples[i]); if (a > peak) peak = a;
+    }
+    if (peak > 0 && peak < Math.pow(10, -18 / 20)) {
+      const g = Math.min(Math.pow(10, -12 / 20) / peak, Math.pow(10, 24 / 20));
+      boostDb = Math.round(20 * Math.log10(g));
+      if (boostDb >= 1) {
+        const out = new Float32Array(samples.length);
+        for (let i = 0; i < samples.length; i++) out[i] = samples[i] * g;
+        samples = out;
+      }
+    }
+  }
+  state.lastRecBoostDb = boostDb;
   try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) { }
   try { await r.ctx.close(); } catch (_) { }
   const mode = r.mode;
@@ -1382,8 +1403,11 @@ async function createDubFromRecording(file) {
     rebuildTrackButtons();          // 録音N ボタンを追加
     resizeCanvases(); draw();
     await renderDub(dub);
+    const boostNote = state.lastRecBoostDb >= 1
+      ? "。入力が小さかったため +" + state.lastRecBoostDb + "dB 自動ブースト（OS の入力音量を上げると音質が改善します）"
+      : "";
     setStatus("録音" + (state.dubs.length + 1) +
-      " を追加しました（Tracks ボタンと同色のバー。× で削除できます）");
+      " を追加しました（Tracks ボタンと同色のバー。× で削除できます）" + boostNote);
   } catch (err) {
     setStatus("トラック追加エラー: " + err.message);
   }
@@ -1398,6 +1422,13 @@ function startMeter() {
     els.meterbar.style.background = m.clip ? "#e1543c" : (m.hot ? "#e8a23d" : "#7fb66b");
     els.meterlabel.textContent = isFinite(m.db) ? Math.round(m.db) + "dB" : "-∞";
     if (m.clip) setStatus("⚠ クリップ検出（0dBFS）! 入力レベルを下げてください");   // AC-14
+    // 入力レベル低すぎ警告: AGC を切っている（11.1）ため OS の入力音量が低いと
+    // 小さく録れてしまい、後からブーストするとノイズだけ目立つ。録音中に知らせる。
+    if (isFinite(m.db) && m.db > state.rec.maxDb) state.rec.maxDb = m.db;
+    if (!m.clip && performance.now() - state.rec.t0ms > 2500 && state.rec.maxDb < -30) {
+      setStatus("⚠ 入力レベルが小さすぎます（ここまでのピーク " + Math.round(state.rec.maxDb) +
+        " dBFS。目標 -12 dBFS）。OS のサウンド設定で入力音量を上げるか、マイクに近づいてください");
+    }
     state.rec.meterRAF = requestAnimationFrame(render);
   };
   state.rec.meterRAF = requestAnimationFrame(render);
