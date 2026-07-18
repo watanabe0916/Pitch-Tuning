@@ -202,8 +202,8 @@ function drawDragFrame() {
     const d = state.drag;
     const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
     const w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
-    ctx.fillStyle = "rgba(120,180,240,0.15)";
-    ctx.strokeStyle = "rgba(140,190,240,0.9)";
+    ctx.fillStyle = "rgba(232,162,61,0.14)";
+    ctx.strokeStyle = "rgba(244,192,107,0.85)";
     ctx.fillRect(x, y, w, h); ctx.strokeRect(x + 0.5, y + 0.5, w, h);
   }
 }
@@ -226,15 +226,16 @@ function renderScene(ctx, v, skip) {
     const midi = Math.round(c / 100);
     const y = v.centsToY(c + 50);
     const h = v.rowHeightPx;
-    ctx.fillStyle = isBlackKey(midi) ? "#191c22" : "#1c2027";
+    ctx.fillStyle = isBlackKey(midi) ? "#14100b" : "#1a1510";
     ctx.fillRect(0, y - h / 2, v.width, h);
-    ctx.strokeStyle = "#262b33";
+    ctx.strokeStyle = "#2a2115";
     ctx.beginPath(); ctx.moveTo(0, v.centsToY(c)); ctx.lineTo(v.width, v.centsToY(c)); ctx.stroke();
   }
 
   // 時間グリッド = BPM と拍子による拍線・小節線。
   // 小節線は明るく＋小節番号、拍線は細く。BPM が速く拍線が密なら間引く。
-  ctx.font = "10px sans-serif";
+  // 小節番号は機材の表示器のようにモノスペースで（style.css の --font-data と揃える）。
+  ctx.font = "10px ui-monospace, 'SF Mono', 'Roboto Mono', monospace";
   const bpm = state.tempo.bpm, beats = state.tempo.beatsPerBar;
   const spb = 60 / bpm;                       // 1拍の秒数
   const beatPx = spb * (v.width / (v.t1 || 1));
@@ -244,11 +245,11 @@ function renderScene(ctx, v, skip) {
     const x = v.timeToX(t);
     const isBar = bi % beats === 0;
     if (!isBar && (bi % beatStride !== 0)) continue;
-    ctx.strokeStyle = isBar ? "#39414f" : "#242932";
+    ctx.strokeStyle = isBar ? "#4a3f2c" : "#221c13";
     ctx.lineWidth = isBar ? 1.4 : 1;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
     if (isBar) {                              // 小節番号（1始まり）
-      ctx.fillStyle = "#6b7280";
+      ctx.fillStyle = "#8c8172";
       ctx.fillText(String(bi / beats + 1), x + 3, 11);
     }
   }
@@ -257,7 +258,7 @@ function renderScene(ctx, v, skip) {
   // フレーズ境界（無音での分割点・10.4）を薄いシアンの破線で示す
   const bounds = state.session.phraseBounds || [];
   if (bounds.length) {
-    ctx.strokeStyle = "rgba(90,200,220,0.5)"; ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "rgba(79,183,176,0.55)"; ctx.setLineDash([6, 4]);
     for (const tb of bounds) {
       const x = v.timeToX(tb);
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
@@ -277,8 +278,8 @@ function renderScene(ctx, v, skip) {
 // 白い F0 曲線（編集オフセットを反映した表示用の近似）
 function drawF0Curve(ctx, v) {
   const s = state.session, f0 = s.f0Hz, hop = s.hopSec;
-  const primary = s.notes.filter((n) => !n.voice);   // 白い曲線は主ボイスのみ反映
-  ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.3;
+  const primary = s.notes.filter((n) => !n.voice);   // 曲線は主ボイスのみ反映
+  ctx.strokeStyle = "rgba(237,230,216,0.9)"; ctx.lineWidth = 1.3;
   ctx.beginPath();
   let pen = false;
   for (let i = 0; i < f0.length; i++) {
@@ -308,20 +309,21 @@ function drawOneSegment(ctx, v, note, s, i) {
   drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop);
 
   if (s.mute) {
-    ctx.strokeStyle = "rgba(170,170,180,0.85)";
+    ctx.strokeStyle = "rgba(156,144,130,0.85)";
     ctx.setLineDash([4, 3]);
     ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
     ctx.setLineDash([]);
   } else {
     const fill = PL.gainFillFraction(s.gainDb);
     const fh = h * fill;
-    const harm = !!note.voice;               // ハモリ副ボイスは橙系で区別
-    ctx.fillStyle = active ? (harm ? "rgba(235,160,80,0.95)" : "rgba(95,155,240,0.95)")
-      : (selected ? (harm ? "rgba(225,150,75,0.9)" : "rgba(88,148,232,0.9)")
-        : (harm ? "rgba(210,140,70,0.78)" : (i % 2 ? "rgba(70,120,200,0.72)" : "rgba(80,135,215,0.8)")));
+    // 主声部=琥珀（VUメーターの発光色）／ハモリ=ティール（第2チャンネルのケーブル色）。
+    const harm = !!note.voice;
+    ctx.fillStyle = active ? (harm ? "rgba(94,196,189,0.95)" : "rgba(244,192,107,0.95)")
+      : (selected ? (harm ? "rgba(79,183,176,0.9)" : "rgba(232,162,61,0.92)")
+        : (harm ? "rgba(69,163,156,0.72)" : (i % 2 ? "rgba(196,138,58,0.68)" : "rgba(216,154,68,0.78)")));
     ctx.fillRect(x0, yBot - fh, w, fh);
-    ctx.strokeStyle = selected ? "rgba(255,225,130,1)"
-      : (harm ? "rgba(240,190,120,0.9)" : "rgba(150,190,240,0.9)");
+    ctx.strokeStyle = selected ? "rgba(255,224,150,1)"
+      : (harm ? "rgba(150,224,218,0.9)" : "rgba(244,208,140,0.85)");
     ctx.lineWidth = selected ? 2 : 1;
     ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
     ctx.lineWidth = 1;
@@ -334,9 +336,9 @@ function drawOneSegment(ctx, v, note, s, i) {
     const tau = (s.transitionInMs || 40) / 1000;
     const bx0 = v.timeToX(s.startSec - tau / 2), bx1 = v.timeToX(s.startSec + tau / 2);
     const bandTop = Math.min(yPrev, yc) - h / 2, bandBot = Math.max(yPrev, yc) + h / 2;
-    ctx.fillStyle = "rgba(230,180,90,0.22)";
+    ctx.fillStyle = "rgba(232,162,61,0.2)";
     ctx.fillRect(bx0, bandTop, Math.max(2, bx1 - bx0), bandBot - bandTop);
-    ctx.strokeStyle = "rgba(235,185,95,0.95)";
+    ctx.strokeStyle = "rgba(244,192,107,0.95)";
     ctx.beginPath(); ctx.moveTo(x0, bandTop); ctx.lineTo(x0, bandBot); ctx.stroke();
   }
 }
@@ -346,7 +348,7 @@ function drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop) {
   if (!rms || !rms.length) return;
   const i0 = Math.max(0, Math.floor(s.startSec / hop));
   const i1 = Math.min(rms.length - 1, Math.ceil(s.endSec / hop));
-  ctx.fillStyle = "rgba(205,208,215,0.12)";
+  ctx.fillStyle = "rgba(237,230,216,0.10)";
   ctx.beginPath(); ctx.moveTo(x0, yBot);
   for (let i = i0; i <= i1; i++) {
     const norm = Math.max(0, Math.min(1, (rms[i] + 60) / 60));
@@ -362,11 +364,11 @@ function drawKeys() {
   for (let c = v.cLo; c <= v.cHi; c += 100) {
     const midi = Math.round(c / 100);
     const y = v.centsToY(c + 50), h = v.rowHeightPx;
-    ctx.fillStyle = isBlackKey(midi) ? "#14161b" : "#e8e8ea";
+    ctx.fillStyle = isBlackKey(midi) ? "#120f0a" : "#ede6d8";
     ctx.fillRect(0, y - h / 2, w, h);
-    ctx.strokeStyle = "#333"; ctx.strokeRect(0, y - h / 2, w, h);
+    ctx.strokeStyle = "#3a3226"; ctx.strokeRect(0, y - h / 2, w, h);
     if (!isBlackKey(midi)) {
-      ctx.fillStyle = "#666"; ctx.font = "9px sans-serif";
+      ctx.fillStyle = "#6b6153"; ctx.font = "9px ui-monospace, 'SF Mono', 'Roboto Mono', monospace";
       ctx.fillText(centsToName(c), 4, y + 3);
     }
   }
@@ -993,7 +995,7 @@ function drawBacking() {
   ctx.clearRect(0, 0, cw, ch);
   const peaks = state.backing.peaks, dur = state.backing.durationSec;
   const mid = ch / 2;
-  ctx.strokeStyle = "rgba(120,180,140,0.85)";
+  ctx.strokeStyle = "rgba(200,190,172,0.8)";
   ctx.beginPath();
   for (let i = 0; i < peaks.length; i++) {
     const t = (i / peaks.length) * dur + state.backing.offsetSec;  // 頭合わせを反映
@@ -1170,7 +1172,7 @@ function startMeter() {
     const m = RL.meterFromPeak(state.rec.peak);
     const norm = Math.max(0, Math.min(1, (m.db + 48) / 48));   // -48..0 dBFS
     els.meterbar.style.width = (norm * 100) + "%";
-    els.meterbar.style.background = m.clip ? "#ff4d4d" : (m.hot ? "#e0b33a" : "#5ac06c");
+    els.meterbar.style.background = m.clip ? "#e1543c" : (m.hot ? "#e8a23d" : "#7fb66b");
     els.meterlabel.textContent = isFinite(m.db) ? Math.round(m.db) + "dB" : "-∞";
     if (m.clip) setStatus("⚠ クリップ検出（0dBFS）! 入力レベルを下げてください");   // AC-14
     state.rec.meterRAF = requestAnimationFrame(render);

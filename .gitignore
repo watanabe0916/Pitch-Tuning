@@ -10,3 +10,6 @@ server/out/
 
 # OS
 .DS_Store
+
+# start.command が使う実行中サーバーの PID 記録
+.server.pid

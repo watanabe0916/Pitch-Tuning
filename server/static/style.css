@@ -1,88 +1,233 @@
+/* ==========================================================================
+   Studio Console — ボーカル・ピッチエディタの視覚言語。
+   アナログ VU メーター / チューナーの世界観：暖色の黒地に琥珀色のフォスファー
+   発光。主声部=琥珀、ハモリ=ティール（パッチケーブルの2色）。数値はモノスペース
+   で機材の表示器のように読ませる。ラベルはハードウェアパネルの銘板のように
+   大文字・字間広め。
+   ========================================================================== */
+
+:root {
+  --bg-0: #100e0b;      /* 最深部（ピアノロール地） */
+  --bg-1: #1a1611;      /* パネル面（ツールバー・伴奏レーン） */
+  --bg-2: #221d17;      /* 隆起した操作面（ボタン・入力欄） */
+  --bg-3: #2b241c;      /* ホバー時の隆起面 */
+  --line: #3a3226;      /* パネルの継ぎ目（はっきりめ） */
+  --line-soft: #2a2419; /* 継ぎ目（控えめ） */
+  --ink: #ede6d8;       /* 主テキスト（暖色アイボリー） */
+  --ink-dim: #9c9082;   /* 副テキスト（暖色タウプ） */
+  --ink-faint: #6b6153; /* 補助テキスト・無効化時 */
+  --amber: #e8a23d;     /* 主アクセント＝フォスファー琥珀（主声部・主操作） */
+  --amber-bright: #f4c06b;
+  --amber-dim: rgba(232, 162, 61, 0.16);
+  --teal: #4fb7b0;      /* 副アクセント＝ハモリ声部（第2チャンネル） */
+  --teal-bright: #6fd1c9;
+  --red: #e1543c;       /* トランスポート・録音・クリップ警告 */
+  --red-bright: #ef6c52;
+  --green: #7fb66b;     /* メーター安全域のみに使う機能色 */
+  --focus: #f4c06b;
+
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --font-ui: -apple-system, "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --font-data: ui-monospace, "SF Mono", "Roboto Mono", "Hiragino Sans", monospace;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
-  font-family: -apple-system, "Hiragino Sans", system-ui, sans-serif;
-  background: #1a1d23; color: #e6e8ec; display: flex; flex-direction: column;
+  font-family: var(--font-ui);
+  background: var(--bg-0); color: var(--ink);
+  display: flex; flex-direction: column;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* キーボードフォーカスは常にはっきり見せる（アクセシビリティの床） */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
+/* 細いブロンズ調スクロールバー（パネルの一部として馴染ませる） */
+* { scrollbar-color: var(--line) var(--bg-0); scrollbar-width: thin; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-0); }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid var(--bg-0); }
+::-webkit-scrollbar-thumb:hover { background: var(--amber); }
+
+/* ==========================================================================
+   ツールバー = 機材パネル。継ぎ目で機能グループに分割し、各グループに
+   銘板ふうの小さな大文字ラベルを添える（TEMPO / TRANSPORT / MIX ...）。
+   ========================================================================== */
 .toolbar {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; background: #23272f; border-bottom: 1px solid #333;
+  display: flex; align-items: center; gap: 14px;
+  padding: 9px 14px; background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   flex-wrap: wrap;
 }
+.tgroup { display: flex; align-items: center; gap: 8px; }
+.tgroup-label {
+  font-family: var(--font-data);
+  font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-faint); user-select: none; white-space: nowrap;
+}
+
 .filebtn {
-  background: #3a6ea5; color: #fff; padding: 7px 14px; border-radius: 6px;
+  background: var(--amber); color: #1a1204; font-weight: 600;
+  padding: 7px 14px; border-radius: var(--radius-md);
   cursor: pointer; font-size: 13px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: background 0.1s ease, transform 0.05s ease;
 }
-.filebtn:hover { background: #4a7eb5; }
+.filebtn:hover { background: var(--amber-bright); }
+.filebtn:active { transform: translateY(1px); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3); }
+
 button {
-  background: #2f3540; color: #e6e8ec; border: 1px solid #444;
-  padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  background: var(--bg-2); color: var(--ink); border: 1px solid var(--line);
+  padding: 7px 14px; border-radius: var(--radius-md); cursor: pointer; font-size: 13px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -1px 0 rgba(0, 0, 0, 0.25);
+  transition: background 0.1s ease, border-color 0.1s ease, transform 0.05s ease;
 }
-button:disabled { opacity: 0.4; cursor: default; }
-button:not(:disabled):hover { background: #3a4150; }
-.rec { color: #ff6b6b; border-color: #7a3a3a; }
-.rec.on { background: #c0392b; color: #fff; border-color: #c0392b; }
-.meter { display: inline-flex; align-items: center; gap: 6px; width: 150px; }
-.meter { position: relative; height: 14px; background: #2a2f38; border-radius: 3px; overflow: hidden; }
-.meterbar { position: absolute; left: 0; top: 0; height: 100%; width: 0%; background: #5ac06c; transition: width 0.05s linear; }
-#meterlabel { position: absolute; right: 4px; top: 0; font-size: 10px; line-height: 14px; color: #cdd2da; z-index: 1; }
+button:disabled { opacity: 0.38; cursor: default; }
+button:not(:disabled):hover { background: var(--bg-3); border-color: #4a4030; }
+button:not(:disabled):active { transform: translateY(1px); box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35); }
 
-.sep { flex: 0 0 1px; height: 22px; background: #444; }
-.snaplabel, .hint { font-size: 12px; color: #9aa0aa; }
-.slider { font-size: 12px; color: #9aa0aa; display: flex; align-items: center; gap: 6px; }
-.slider input[type=range] { width: 90px; }
-.slider span { min-width: 34px; color: #cdd2da; }
-.slider select { background: #2f3540; color: #e6e8ec; border: 1px solid #444; border-radius: 4px; padding: 3px 6px; }
-.chk { font-size: 12px; color: #9aa0aa; display: flex; align-items: center; gap: 4px; }
-#export { background: #3a6ea5; }
-#export:not(:disabled):hover { background: #4a7eb5; }
-#snap { color: #6cc06c; font-weight: 600; }
-.status { margin-left: auto; font-size: 12px; color: #9aa0aa; }
+.rec { color: var(--red-bright); border-color: #4a2e26; }
+.rec.on {
+  background: var(--red); color: #fff; border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(225, 84, 60, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+/* 録音レベルメーター = 実物の VU メーターふうに、安全/注意/危険の3領域を
+   常時薄く見せ、現在値だけを明るく光らせる（構造が情報を持つ）。 */
+.meter {
+  display: inline-flex; align-items: center; width: 150px;
+  position: relative; height: 14px; border-radius: 3px; overflow: hidden;
+  background: linear-gradient(to right,
+    rgba(127, 182, 107, 0.18) 0%, rgba(127, 182, 107, 0.18) 62%,
+    rgba(232, 162, 61, 0.18) 62%, rgba(232, 162, 61, 0.18) 85%,
+    rgba(225, 84, 60, 0.18) 85%, rgba(225, 84, 60, 0.18) 100%);
+  border: 1px solid var(--line);
+}
+.meterbar {
+  position: absolute; left: 0; top: 0; height: 100%; width: 0%;
+  background: var(--green); transition: width 0.05s linear;
+  box-shadow: 0 0 6px currentColor;
+}
+#meterlabel {
+  position: absolute; right: 4px; top: 0; font-family: var(--font-data);
+  font-size: 10px; line-height: 14px; color: var(--ink); z-index: 1;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.6);
+}
+
+.sep { flex: 0 0 1px; height: 24px; background: var(--line); }
+.snaplabel, .hint { font-size: 12px; color: var(--ink-dim); }
+.snaplabel { font-family: var(--font-data); }
+.slider { font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 6px; }
+.slider span { min-width: 34px; color: var(--ink); font-family: var(--font-data); font-size: 11px; }
+.slider select, .slider input[type=number] {
+  background: var(--bg-2); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: 3px 6px; font-family: var(--font-data); font-size: 12px;
+}
+.chk { font-size: 12px; color: var(--ink-dim); display: flex; align-items: center; gap: 4px; }
+input[type=checkbox] { accent-color: var(--amber); }
+
+/* 主操作（開く・書き出す）はどちらも琥珀 = 「原音から仕上げまで」の対句 */
+#export { background: var(--amber); color: #1a1204; font-weight: 600; border-color: transparent; }
+#export:not(:disabled):hover { background: var(--amber-bright); }
+#snap { color: var(--amber); font-weight: 600; font-family: var(--font-data); }
+.status { margin-left: auto; font-size: 12px; color: var(--ink-dim); font-family: var(--font-data); }
+
+/* ヒントバー = パネル下部の銘板シルク印刷。キーは実物のキーキャップふうに。 */
 .hintbar {
-  padding: 5px 14px; background: #1e222a; border-bottom: 1px solid #2c313a;
-  font-size: 11px; color: #8b919c;
+  padding: 6px 14px; background: var(--bg-0); border-bottom: 1px solid var(--line-soft);
+  font-size: 11px; color: var(--ink-faint); line-height: 1.8;
 }
-.hintbar b { color: #cdd2da; }
+.hintbar b {
+  display: inline-block; font-family: var(--font-data); font-weight: 600; font-size: 10px;
+  color: var(--amber-bright); background: var(--bg-2); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 3px; padding: 1px 5px; margin: 0 1px;
+}
 
-.filebtn.alt { background: #4a5568; }
-.filebtn.alt:hover { background: #55647a; }
-.filebtn.alt2 { background: #3a4150; font-size: 12px; padding: 6px 10px; }
-.filebtn.alt2:hover { background: #454d5e; }
+.filebtn.alt { background: var(--teal); color: #08211f; }
+.filebtn.alt:hover { background: var(--teal-bright); }
+.filebtn.alt2 { background: var(--bg-2); color: var(--ink); font-size: 12px; padding: 6px 10px;
+  border: 1px solid var(--line); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
+.filebtn.alt2:hover { background: var(--bg-3); }
 
+/* ==========================================================================
+   カスタムフェーダー（range）: 機材のスライダーふうの溝とキャップ。
+   ========================================================================== */
+input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 90px; height: 16px; background: transparent; cursor: pointer;
+}
+input[type=range]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px; background: var(--line);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.4);
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; margin-top: -5px;
+  width: 8px; height: 14px; border-radius: 2px;
+  background: var(--amber-bright); border: 1px solid #7a5a28;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(232, 162, 61, 0.5);
+}
+input[type=range]::-moz-range-track {
+  height: 4px; border-radius: 2px; background: var(--line);
+}
+input[type=range]::-moz-range-thumb {
+  width: 8px; height: 14px; border-radius: 2px; border: 1px solid #7a5a28;
+  background: var(--amber-bright); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+input[type=range]:disabled::-webkit-slider-thumb { background: var(--ink-faint); border-color: var(--line); box-shadow: none; }
+input[type=range]:disabled::-moz-range-thumb { background: var(--ink-faint); border-color: var(--line); }
+
+/* ==========================================================================
+   エディタ本体（ピアノロール）
+   ========================================================================== */
 .editor { position: relative; flex: 1; display: flex; overflow: hidden; min-height: 0;
   user-select: none; -webkit-user-select: none; }
 /* 鍵盤列は固定幅。canvas をラッパに absolute 配置し、canvas 固有アスペクト比が
    flex 幅計算を乗っ取る問題を回避する。横スクロールしても鍵盤は常に見える。 */
-.keyswrap { flex: 0 0 56px; position: relative; background: #1e2127; z-index: 2; }
+.keyswrap { flex: 0 0 56px; position: relative; background: var(--bg-1); z-index: 2;
+  border-right: 1px solid var(--line); }
 .keyswrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 /* グリッドは横スクロール可能なコンテナ。canvas 幅は JS が内容幅に設定する。 */
-.gridwrap { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; background: #15171c; position: relative; }
+.gridwrap { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; background: var(--bg-0); position: relative; }
 #grid { display: block; height: 100%; cursor: crosshair; }
 #grid.locked { cursor: not-allowed; }
 
 /* 再生ヘッド（両レーンを貫く縦線）。scroll 内容と一緒に動く。 */
 .playhead { position: absolute; top: 0; height: 100%; width: 2px; margin-left: -1px;
-  background: #ff5a5a; pointer-events: none; z-index: 3; }
+  background: var(--red); pointer-events: none; z-index: 3;
+  box-shadow: 0 0 6px rgba(225, 84, 60, 0.7); }
 /* 上端のつまみ。ここだけクリック可能にして左右ドラッグで再生位置を動かす。 */
 .phgrab { position: absolute; top: 0; left: -6px; width: 14px; height: 14px;
-  background: #ff5a5a; border-radius: 0 0 4px 4px; pointer-events: auto;
-  cursor: ew-resize; box-shadow: 0 1px 3px rgba(0,0,0,0.4); }
-.phgrab:hover { background: #ff7a7a; }
+  background: var(--red); border-radius: 0 0 4px 4px; pointer-events: auto;
+  cursor: ew-resize; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
+.phgrab:hover { background: var(--red-bright); }
 #tostart { padding: 7px 12px; font-size: 15px; line-height: 1; }
 
 /* 伴奏レーン（12.4） */
-.backinglane { flex: 0 0 96px; display: flex; border-top: 2px solid #2c313a; background: #1a1d23; }
+.backinglane { flex: 0 0 96px; display: flex; border-top: 1px solid var(--line); background: var(--bg-1); }
 .backctrls { flex: 0 0 210px; padding: 6px 8px; display: flex; flex-direction: column;
-  gap: 4px; font-size: 11px; color: #9aa0aa; border-right: 1px solid #2c313a; }
-.backctrls .blabel { color: #cdd2da; font-weight: 600; }
+  gap: 4px; font-size: 11px; color: var(--ink-dim); border-right: 1px solid var(--line); }
+.backctrls .blabel {
+  font-family: var(--font-data); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 600;
+}
 .backctrls label { display: flex; align-items: center; gap: 4px; }
 .backctrls input[type=range] { width: 90px; }
-.backctrls input[type=number] { width: 64px; background: #2f3540; color: #e6e8ec;
-  border: 1px solid #444; border-radius: 4px; padding: 2px 4px; }
+.backctrls input[type=number] { width: 64px; background: var(--bg-2); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px 4px; font-family: var(--font-data); }
 .tgl { padding: 2px 8px; font-size: 11px; }
-.tgl.on { background: #b5893a; color: #1a1d23; border-color: #b5893a; }
-#bsolo.on { background: #3a8ab5; border-color: #3a8ab5; }
+.tgl.on {
+  background: var(--amber); color: #1a1204; border-color: var(--amber);
+  box-shadow: 0 0 0 2px rgba(232, 162, 61, 0.2);
+}
+#bsolo.on { background: var(--teal); border-color: var(--teal); color: #08211f;
+  box-shadow: 0 0 0 2px rgba(79, 183, 176, 0.2); }
 #bremove { padding: 2px 8px; }
 .bwrap { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; position: relative; }
 #bcanvas { display: block; height: 100%; }

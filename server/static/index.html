@@ -8,52 +8,78 @@
 </head>
 <body>
   <header class="toolbar">
-    <label class="filebtn">
-      音声を開く
-      <input id="file" type="file" accept=".wav,.flac,.aiff,.aif" hidden />
-    </label>
-    <label class="filebtn alt">
-      伴奏を追加
-      <input id="bfile" type="file" accept="audio/*" hidden disabled />
-    </label>
-    <button id="record" class="rec">● 録音</button>
-    <label class="slider" title="テンポ（小節線・メトロノーム）">♩=<input id="bpm" type="number" min="30" max="300" step="1" value="120" style="width:52px" /></label>
-    <label class="slider" title="拍子（1小節の拍数）">拍子
-      <select id="beats">
-        <option value="2">2/4</option>
-        <option value="3">3/4</option>
-        <option value="4" selected>4/4</option>
-        <option value="5">5/4</option>
-        <option value="6">6/8</option>
-      </select>
-    </label>
-    <button id="metro" class="tgl on" title="メトロノーム（録音中に鳴らす）">🔔</button>
-    <span id="meter" class="meter" hidden><span id="meterbar" class="meterbar"></span><span id="meterlabel">-∞</span></span>
-    <button id="play" disabled>▶ 再生</button>
-    <button id="stop" disabled>■ 停止</button>
-    <button id="tostart" title="再生位置を先頭に戻す" disabled>↩︎</button>
+    <div class="tgroup">
+      <span class="tgroup-label">Source</span>
+      <label class="filebtn">
+        音声を開く
+        <input id="file" type="file" accept=".wav,.flac,.aiff,.aif" hidden />
+      </label>
+      <label class="filebtn alt">
+        伴奏を追加
+        <input id="bfile" type="file" accept="audio/*" hidden disabled />
+      </label>
+    </div>
     <span class="sep"></span>
-    <label class="slider">Master <input id="master" type="range" min="-24" max="6" step="0.5" value="0" /><span id="masterval">0dB</span></label>
-    <label class="slider">補正 <input id="strength" type="range" min="0" max="1" step="0.05" value="0" disabled /><span id="strengthval">–</span></label>
-    <label class="slider">残響 <input id="reverb" type="range" min="0" max="1" step="0.05" value="0" /><span id="reverbval">0%</span></label>
+
+    <div class="tgroup">
+      <span class="tgroup-label">Rec</span>
+      <button id="record" class="rec">● 録音</button>
+      <label class="slider" title="テンポ（小節線・メトロノーム）">♩=<input id="bpm" type="number" min="30" max="300" step="1" value="120" style="width:52px" /></label>
+      <label class="slider" title="拍子（1小節の拍数）">拍子
+        <select id="beats">
+          <option value="2">2/4</option>
+          <option value="3">3/4</option>
+          <option value="4" selected>4/4</option>
+          <option value="5">5/4</option>
+          <option value="6">6/8</option>
+        </select>
+      </label>
+      <button id="metro" class="tgl on" title="メトロノーム（録音中に鳴らす）">🔔</button>
+      <span id="meter" class="meter" hidden><span id="meterbar" class="meterbar"></span><span id="meterlabel">-∞</span></span>
+    </div>
     <span class="sep"></span>
-    <button id="undo" title="元に戻す (Cmd/Ctrl+Z)" disabled>↶</button>
-    <button id="redo" title="やり直し (Cmd/Ctrl+Shift+Z)" disabled>↷</button>
-    <button id="zoomout" title="縮小" disabled>－</button>
-    <button id="zoomin" title="拡大" disabled>＋</button>
-    <label class="filebtn alt2">プロジェクト読込<input id="projfile" type="file" accept=".json" hidden /></label>
-    <button id="projsave" title="プロジェクト保存" disabled>保存</button>
+
+    <div class="tgroup">
+      <span class="tgroup-label">Transport</span>
+      <button id="play" disabled>▶ 再生</button>
+      <button id="stop" disabled>■ 停止</button>
+      <button id="tostart" title="再生位置を先頭に戻す" disabled>↩︎</button>
+    </div>
     <span class="sep"></span>
-    <label class="slider">形式
-      <select id="fmt">
-        <option value="wav">WAV</option>
-        <option value="flac">FLAC</option>
-        <option value="mp3">MP3</option>
-      </select>
-    </label>
-    <label class="chk"><input id="normalize" type="checkbox" /> -1dBTP正規化</label>
-    <button id="export" disabled>⬇ 書き出し</button>
+
+    <div class="tgroup">
+      <span class="tgroup-label">Mix</span>
+      <label class="slider">Master <input id="master" type="range" min="-24" max="6" step="0.5" value="0" /><span id="masterval">0dB</span></label>
+      <label class="slider">補正 <input id="strength" type="range" min="0" max="1" step="0.05" value="0" disabled /><span id="strengthval">–</span></label>
+      <label class="slider">残響 <input id="reverb" type="range" min="0" max="1" step="0.05" value="0" /><span id="reverbval">0%</span></label>
+    </div>
     <span class="sep"></span>
+
+    <div class="tgroup">
+      <span class="tgroup-label">History</span>
+      <button id="undo" title="元に戻す (Cmd/Ctrl+Z)" disabled>↶</button>
+      <button id="redo" title="やり直し (Cmd/Ctrl+Shift+Z)" disabled>↷</button>
+      <button id="zoomout" title="縮小" disabled>－</button>
+      <button id="zoomin" title="拡大" disabled>＋</button>
+      <label class="filebtn alt2">プロジェクト読込<input id="projfile" type="file" accept=".json" hidden /></label>
+      <button id="projsave" title="プロジェクト保存" disabled>保存</button>
+    </div>
+    <span class="sep"></span>
+
+    <div class="tgroup">
+      <span class="tgroup-label">Export</span>
+      <label class="slider">形式
+        <select id="fmt">
+          <option value="wav">WAV</option>
+          <option value="flac">FLAC</option>
+          <option value="mp3">MP3</option>
+        </select>
+      </label>
+      <label class="chk"><input id="normalize" type="checkbox" /> -1dBTP正規化</label>
+      <button id="export" disabled>⬇ 書き出し</button>
+    </div>
+    <span class="sep"></span>
+
     <label class="snaplabel">スナップ: <span id="snap">50 cent</span></label>
     <span id="status" class="status"></span>
   </header>
