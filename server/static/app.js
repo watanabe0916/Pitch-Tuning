@@ -34,6 +34,9 @@ const state = {
   },
   phDrag: false,    // 再生ヘッドを掴んでドラッグ中か
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
+  dubs: [],             // 追加トラック [{sessionId, notes, rmsDb, buffer, dirty, enabled}]
+  sessReg: {},          // sessionId → 静的解析データ（f0Hz/rmsDb 等）。削除アンドゥ・昇格に使う
+  playMain: true,       // 録音1（主トラック）を再生・モニターで鳴らすか
   dirty: false,         // 未再合成の編集があるか
   tempo: { bpm: 120, beatsPerBar: 4 },   // 小節線とメトロノームのテンポ・拍子
   metronome: { on: true, timer: null },  // 録音中にメトロノームを鳴らすか
@@ -68,6 +71,9 @@ const els = {
   phgrab: document.querySelector(".phgrab"),
   tostart: document.getElementById("tostart"),
   record: document.getElementById("record"),
+  tracksgroup: document.getElementById("tracksgroup"),
+  trackssep: document.getElementById("trackssep"),
+  tracks: document.getElementById("tracks"),
   bpm: document.getElementById("bpm"),
   beats: document.getElementById("beats"),
   metro: document.getElementById("metro"),
@@ -108,8 +114,15 @@ function layout() {
 // ==========================================================================
 // View: 座標変換（time↔x, cents↔y）を集約
 // ==========================================================================
+// 主セッション + 重ねどり全レイヤーのノートをまとめて返す（描画・ヒットテスト用）。
+function allNotes() {
+  let arr = state.session ? state.session.notes : [];
+  for (const d of state.dubs) arr = arr.concat(d.notes);
+  return arr;
+}
+
 function makeView(session, width, height) {
-  const { lo, hi } = PL.pitchRange(session.notes);
+  const { lo, hi } = PL.pitchRange(allNotes());
   const t0 = 0, t1 = Math.max(session.durationSec, 0.5);
   return PL.makeTransforms(t0, t1, lo, hi, width, height);
 }
@@ -209,7 +222,7 @@ function drawDragFrame() {
 }
 
 function locateSeg(seg) {
-  for (const note of state.session.notes) {
+  for (const note of allNotes()) {
     const i = note.segments.indexOf(seg);
     if (i >= 0) return { note, i };
   }
@@ -267,7 +280,7 @@ function renderScene(ctx, v, skip) {
   }
 
   drawF0Curve(ctx, v);
-  for (const note of state.session.notes) {
+  for (const note of allNotes()) {
     note.segments.forEach((s, i) => {
       if (skip && skip.has(s)) return;
       drawOneSegment(ctx, v, note, s, i);
@@ -294,10 +307,25 @@ function drawF0Curve(ctx, v) {
   ctx.stroke();
 }
 
+// 重ねどりレイヤーの色（トラック2〜5）。Tracks ボタン（TRACK_HEX）と同色。
+// 5トラック目以降は循環する。
+const DUB_COLORS = [
+  { base: "201,106,152", bright: "232,140,185", stroke: "240,170,205" },  // ローズ
+  { base: "155,127,214", bright: "180,155,235", stroke: "201,184,240" },  // すみれ
+  { base: "152,184,84",  bright: "175,205,110", stroke: "200,222,154" },  // 若葉
+  { base: "94,159,212",  bright: "125,185,235", stroke: "168,205,240" },  // 空
+];
+function dubColorOf(note) {
+  const i = state.dubs.findIndex((d) => d.sessionId === note.dub);
+  return DUB_COLORS[(i >= 0 ? i : 0) % DUB_COLORS.length];
+}
+
 // 1 セグメント分の描画（塗り高さ・RMS背景・枠・遷移帯）。
 function drawOneSegment(ctx, v, note, s, i) {
   const h = Math.max(10, v.rowHeightPx * 0.9);
-  const rms = state.session.rmsDb, hop = state.session.hopSec;
+  const dubOf = note.dub ? state.dubs.find((dd) => dd.sessionId === note.dub) : null;
+  const rms = dubOf ? dubOf.rmsDb : state.session.rmsDb;
+  const hop = state.session.hopSec;
   const c = s.baseCents + s.pitchOffsetCents;
   const x0 = v.timeToX(s.startSec), x1 = v.timeToX(s.endSec);
   const w = Math.max(1, x1 - x0);
@@ -316,14 +344,20 @@ function drawOneSegment(ctx, v, note, s, i) {
   } else {
     const fill = PL.gainFillFraction(s.gainDb);
     const fh = h * fill;
-    // 主声部=琥珀（VUメーターの発光色）／ハモリ=ティール（第2チャンネルのケーブル色）。
+    // 主声部=琥珀（VUメーターの発光色）／ハモリ=ティール／重ねどり=トラックごとの4色。
     const harm = !!note.voice;
-    ctx.fillStyle = active ? (harm ? "rgba(94,196,189,0.95)" : "rgba(244,192,107,0.95)")
-      : (selected ? (harm ? "rgba(79,183,176,0.9)" : "rgba(232,162,61,0.92)")
-        : (harm ? "rgba(69,163,156,0.72)" : (i % 2 ? "rgba(196,138,58,0.68)" : "rgba(216,154,68,0.78)")));
+    const dub = !!note.dub;
+    const dc = dub ? dubColorOf(note) : null;
+    ctx.fillStyle = active
+      ? (dub ? `rgba(${dc.bright},0.95)` : harm ? "rgba(94,196,189,0.95)" : "rgba(244,192,107,0.95)")
+      : (selected
+        ? (dub ? `rgba(${dc.bright},0.9)` : harm ? "rgba(79,183,176,0.9)" : "rgba(232,162,61,0.92)")
+        : (dub ? `rgba(${dc.base},${i % 2 ? 0.66 : 0.76})`
+          : harm ? "rgba(69,163,156,0.72)"
+            : (i % 2 ? "rgba(196,138,58,0.68)" : "rgba(216,154,68,0.78)")));
     ctx.fillRect(x0, yBot - fh, w, fh);
     ctx.strokeStyle = selected ? "rgba(255,224,150,1)"
-      : (harm ? "rgba(150,224,218,0.9)" : "rgba(244,208,140,0.85)");
+      : (dub ? `rgba(${dc.stroke},0.85)` : harm ? "rgba(150,224,218,0.9)" : "rgba(244,208,140,0.85)");
     ctx.lineWidth = selected ? 2 : 1;
     ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
     ctx.lineWidth = 1;
@@ -381,12 +415,16 @@ const mods = (e) => ({ shift: e.shiftKey, alt: e.altKey });
 function updateSnapLabel(e) { els.snap.textContent = PL.snapStep(mods(e)) + " cent"; }
 
 function noteOf(seg) {
-  for (const n of state.session.notes) if (n.segments.indexOf(seg) >= 0) return n;
+  for (const n of allNotes()) if (n.segments.indexOf(seg) >= 0) return n;
   return null;
 }
 function replaceNote(oldNote, newNote) {
   const idx = state.session.notes.indexOf(oldNote);
-  if (idx >= 0) state.session.notes[idx] = newNote;
+  if (idx >= 0) { state.session.notes[idx] = newNote; return; }
+  for (const d of state.dubs) {
+    const j = d.notes.indexOf(oldNote);
+    if (j >= 0) { newNote.dub = oldNote.dub; d.notes[j] = newNote; return; }
+  }
 }
 
 // ヒットテスト: 分割線(divider) を最優先、次にセグメント本体(body)。
@@ -399,19 +437,20 @@ function hitTest(px, t, cents) {
   const within = (s) => cents == null ||
     Math.abs((s.baseCents + s.pitchOffsetCents) - cents) <= halfCents;
 
-  for (const note of state.session.notes) {
+  const notes = allNotes();
+  for (const note of notes) {
     for (let i = 1; i < note.segments.length; i++) {
       const s = note.segments[i], p = note.segments[i - 1];
       if (Math.abs(px - v.timeToX(s.startSec)) < 6 && (within(s) || within(p)))
         return { kind: "divider", note, bi: i };
     }
   }
-  // クリック音高に最も近いバー（主/ハモリが重なっても個別に掴める）
+  // クリック音高に最も近いバー（主/ハモリ/重ねどりが重なっても個別に掴める）
   if (cents == null) {
-    const seg = PL.segAtTime(state.session.notes, t);
+    const seg = PL.segAtTime(notes, t);
     return seg ? { kind: "body", note: noteOf(seg), seg } : null;
   }
-  const seg = PL.segAtPoint(state.session.notes, t, cents);
+  const seg = PL.segAtPoint(notes, t, cents);
   if (seg && within(seg)) return { kind: "body", note: noteOf(seg), seg };
   return null;
 }
@@ -420,6 +459,7 @@ function commitEdit(changed) {
   if (!changed) return;
   pushUndo();             // commitEdit は全編集の合流点。ここで直前状態を undo へ。
   state.dirty = true;
+  for (const d of state.dubs) d.dirty = true;   // レイヤーも次回レンダで更新
   draw();
   renderAndLoad(false);   // 再合成して準備（自動再生はしない）
 }
@@ -427,7 +467,11 @@ function commitEdit(changed) {
 // --- アンドゥ/リドゥ（EditState スナップショット・6.2） ---
 let undoStack = [], redoStack = [], lastSnap = null;
 function snapshotState() {
-  return JSON.stringify({ notes: state.session.notes, master: state.master, reverb: state.reverb });
+  return JSON.stringify({
+    mainSid: state.session.sessionId,   // トラック削除・昇格も巻き戻せるように主 sid を記録
+    notes: state.session.notes, master: state.master, reverb: state.reverb,
+    dubs: state.dubs.map((d) => ({ sessionId: d.sessionId, notes: d.notes })),
+  });
 }
 function initUndo() { undoStack = []; redoStack = []; lastSnap = snapshotState(); updateUndoButtons(); }
 function pushUndo() {
@@ -441,9 +485,30 @@ function pushUndo() {
 }
 function applySnapshot(snap) {
   const o = JSON.parse(snap);
-  state.session.notes = o.notes;
+  // 主トラックの復元。sid が違う場合（トラック削除で昇格した/戻した）はレジストリから再構築。
+  const mainSid = o.mainSid || state.session.sessionId;
+  if (state.session.sessionId !== mainSid && state.sessReg[mainSid]) {
+    state.session = Object.assign({}, state.sessReg[mainSid], { notes: o.notes });
+    state.audio.buffer = null;          // 主バッファは作り直し（下の renderAndLoad）
+  } else {
+    state.session.notes = o.notes;
+  }
   state.master = o.master;
   state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
+  // 追加トラックの復元: スナップショットの一覧に合わせて再構成する。
+  // 現存すればノートだけ差し替え、削除済みならレジストリから復活（バッファは dirty で再レンダ）。
+  const newDubs = [];
+  for (const sd of o.dubs || []) {
+    const cur = state.dubs.find((x) => x.sessionId === sd.sessionId);
+    if (cur) { cur.notes = sd.notes; cur.dirty = true; newDubs.push(cur); }
+    else {
+      const reg = state.sessReg[sd.sessionId];
+      newDubs.push({ sessionId: sd.sessionId, notes: sd.notes,
+        rmsDb: reg ? reg.rmsDb : null, buffer: null, dirty: true, enabled: true });
+    }
+  }
+  state.dubs = newDubs;
+  rebuildTrackButtons();
   setSelection([]);   // スナップショットのノートは別オブジェクトなので選択は解除
   // UI 同期
   els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
@@ -733,7 +798,7 @@ function endDrag() {
     const v = state.view;
     if (d.moved) {
       const sel = PL.segmentsInRect(
-        state.session.notes, v.xToTime(d.x0), v.xToTime(d.x1),
+        allNotes(), v.xToTime(d.x0), v.xToTime(d.x1),
         v.yToCents(d.y0), v.yToCents(d.y1));
       setSelection(sel);
       setStatus(sel.length + " ノートのバーを選択");
@@ -907,6 +972,7 @@ els.file.addEventListener("change", async (e) => {
   if (!f) return;
   setStatus("解析中…");
   els.play.disabled = els.stop.disabled = true;
+  const oldSid = state.session && state.session.sessionId;   // 置き換え後に削除する
   const fd = new FormData();
   fd.append("audio", f);
   try {
@@ -926,12 +992,48 @@ els.file.addEventListener("change", async (e) => {
     els.bfile.disabled = false;   // 伴奏追加を有効化
     els.zoomin.disabled = els.zoomout.disabled = els.projsave.disabled = false;
     setSelection([]); state.clipboard = null;   // 選択・クリップボードをリセット
+
+    // 新しい曲を開いた: 以前の全セッション（主 + 追加トラック + 削除アンドゥ用の保持分）を
+    // サーバーから削除し（sp/ap のメモリ解放）、レジストリを作り直す。
+    for (const sid of Object.keys(state.sessReg)) {
+      if (sid !== j.sessionId)
+        fetch(`/api/session/${sid}`, { method: "DELETE" }).catch(() => {});
+    }
+    if (oldSid && oldSid !== j.sessionId && !state.sessReg[oldSid])
+      fetch(`/api/session/${oldSid}`, { method: "DELETE" }).catch(() => {});
+    state.dubs = [];
+    state.sessReg = {}; state.sessReg[j.sessionId] = regFromSession(j);
+    state.playMain = true;
+    resizeCanvases(); draw();
+    rebuildTrackButtons();          // ヘッダーの 録音1/録音2… ボタンを更新
     initUndo();                   // アンドゥ履歴を初期化
+    // 伴奏の引き継ぎ: 旧セッションに伴奏があれば、新セッションへ自動で再アップロード
+    // （再録音で「録音だけ」置き換えるため）。元ファイルが無ければ外す。
+    if (state.backing) {
+      const b = state.backing;
+      if (b.file) {
+        setStatus("伴奏を引き継いでいます…");
+        try { await uploadBacking(b.file, b); }
+        catch (_) { state.backing = null; els.backinglane.hidden = true; }
+      } else {
+        state.backing = null; els.backinglane.hidden = true;
+      }
+    }
     await renderAndLoad(false);   // 初期プレビューを用意
   } catch (err) {
     setStatus("エラー: " + err.message);
   }
 });
+
+// セッション応答から静的解析データ（描画・昇格に必要な分）を取り出してレジストリへ。
+// f0Hz / rmsDb はデコード済み Float32Array を保持する。
+function regFromSession(j) {
+  return {
+    sessionId: j.sessionId, sampleRate: j.sampleRate, durationSec: j.durationSec,
+    hopSec: j.hopSec, f0Hz: j.f0Hz, rmsDb: j.rmsDb,
+    phraseBounds: j.phraseBounds || [], numPhrases: j.numPhrases,
+  };
+}
 
 function buildEditState() {
   // 主ボイス(voice 未設定)とハモリ(voice≥1)を分離して送る
@@ -953,29 +1055,40 @@ function buildEditState() {
 // ==========================================================================
 // 伴奏（バッキング）トラック（12章）
 // ==========================================================================
+// 伴奏をサーバーへアップロードし state.backing を構築する。
+// 元の File を保持し、再録音などでセッションが作り直されても引き継げるようにする。
+// opts に前回の offset/gain/mute/solo を渡すと復元する。
+async function uploadBacking(f, opts) {
+  const fd = new FormData();
+  fd.append("sessionId", state.session.sessionId);
+  fd.append("audio", f);
+  const res = await fetch("/api/backing", { method: "POST", body: fd });
+  if (!res.ok) throw new Error(await res.text());
+  const j = await res.json();
+  j.peaks = b64ToF32(j.peaks);
+  // 再生用オーディオを取得してデコード
+  const ab = await (await fetch(`/api/backing/${state.session.sessionId}/audio`)).arrayBuffer();
+  const buffer = await ensureAudioCtx().decodeAudioData(ab);
+  const o = opts || {};
+  state.backing = {
+    peaks: j.peaks, durationSec: j.durationSec, buffer, file: f,
+    offsetSec: o.offsetSec || 0, gainDb: o.gainDb || 0,
+    mute: !!o.mute, solo: !!o.solo,
+  };
+  els.backinglane.hidden = false;
+  els.boffset.value = String(state.backing.offsetSec);
+  els.bvol.value = String(state.backing.gainDb);
+  els.bmute.classList.toggle("on", state.backing.mute);
+  els.bsolo.classList.toggle("on", state.backing.solo);
+  resizeCanvases(); draw(); drawBacking();
+}
+
 els.bfile.addEventListener("change", async (e) => {
   const f = e.target.files[0];
   if (!f || !state.session) return;
   setStatus("伴奏を解析中…");
-  const fd = new FormData();
-  fd.append("sessionId", state.session.sessionId);
-  fd.append("audio", f);
   try {
-    const res = await fetch("/api/backing", { method: "POST", body: fd });
-    if (!res.ok) throw new Error(await res.text());
-    const j = await res.json();
-    j.peaks = b64ToF32(j.peaks);
-    // 再生用オーディオを取得してデコード
-    const ab = await (await fetch(`/api/backing/${state.session.sessionId}/audio`)).arrayBuffer();
-    const buffer = await ensureAudioCtx().decodeAudioData(ab);
-    state.backing = {
-      peaks: j.peaks, durationSec: j.durationSec, buffer,
-      offsetSec: 0, gainDb: 0, mute: false, solo: false,
-    };
-    els.backinglane.hidden = false;
-    els.boffset.value = "0"; els.bvol.value = "0";
-    els.bmute.classList.remove("on"); els.bsolo.classList.remove("on");
-    resizeCanvases(); draw(); drawBacking();
+    await uploadBacking(f);
     setStatus("伴奏を追加しました");
   } catch (err) {
     setStatus("伴奏エラー: " + err.message);
@@ -1047,6 +1160,9 @@ els.bcanvas.parentElement.addEventListener("scroll", () => {
 // ==========================================================================
 // 録音（AudioWorklet で生 PCM を取得・11章。アカペラのみ）
 // ==========================================================================
+// 録音 = 常に「新しいトラックを追加」。1本目は主トラック（録音1）になり、
+// 2本目以降は既存の音声を聴きながらの重ね録りで 録音2、3…として追加される。
+// 録り直したいトラックは Tracks の × で削除してから録音し直す。
 els.record.addEventListener("click", () => {
   if (state.rec && state.rec.active) stopRecording(); else startRecording();
 });
@@ -1109,6 +1225,7 @@ function stopMetronome() {
 
 async function startRecording() {
   if (state.audio.playing) stopAudio();
+  const mode = state.session ? "overdub" : "new";   // 2本目以降は常にトラック追加
   try {
     // 11.1: 通話向け前処理をすべて無効化してマイクを取得
     const stream = await navigator.mediaDevices.getUserMedia({ audio: RL.AUDIO_CONSTRAINTS });
@@ -1124,18 +1241,58 @@ async function startRecording() {
     const silent = ctx.createGain(); silent.gain.value = 0;
     src.connect(node); node.connect(silent); silent.connect(ctx.destination);
 
+    // すでにある音声を聴きながら重ね録りする（11.4）。
+    // 鳴らすのは Tracks ボタンで ON のトラック（録音1 + 重ねどり）+ 伴奏。
+    // 同じ ctx 上で t0 に再生開始し、停止時に録音の頭を t0 へ揃える（11.5 の近似補正）。
+    // スピーカーだと再生音がマイクに回り込むため、ヘッドホン前提。
+    await ctx.resume();   // サスペンド状態だとモニターもメトロノームも無音になるため明示的に起こす
+    let monitorT0 = 0;
+    const monGains = {};
+    const monBufs = [];
+    if (state.playMain && state.audio.buffer) monBufs.push(["main", state.audio.buffer]);
+    for (const d of state.dubs)
+      if (d.enabled !== false && d.buffer) monBufs.push([d.sessionId, d.buffer]);
+    const bbuf = state.backing && !state.backing.mute && state.backing.buffer;
+    if (monBufs.length || bbuf) {
+      monitorT0 = ctx.currentTime + 0.25;
+      const solo = state.backing && state.backing.solo;   // 伴奏ソロ中はボーカル系を無音に
+      for (const [key, buf] of monBufs) {
+        const s = ctx.createBufferSource(), g = ctx.createGain();
+        g.gain.value = solo ? 0 : 1;
+        s.buffer = buf; s.connect(g); g.connect(ctx.destination);
+        s.start(monitorT0);
+        monGains[key] = g;
+      }
+      if (bbuf) {
+        const sch = PL.computePlaybackSchedule(monitorT0, state.backing.offsetSec, 0);
+        const s = ctx.createBufferSource(), g = ctx.createGain();
+        g.gain.value = Math.pow(10, state.backing.gainDb / 20);
+        s.buffer = bbuf; s.connect(g); g.connect(ctx.destination);
+        s.start(Math.max(ctx.currentTime, sch.backingStart), Math.max(0, sch.backingOffset));
+      }
+    }
+
     const chunks = [];
-    state.rec = { active: true, stream, ctx, node, chunks, peak: 0, meterRAF: 0 };
+    state.rec = { active: true, mode, stream, ctx, node, chunks,
+                  peak: 0, meterRAF: 0, monitorT0, monGains,
+                  firstChunkTime: 0, firstChunkLen: 0 };
     node.port.onmessage = (e) => {
+      const r = state.rec;
+      if (!r) return;
       const d = e.data; chunks.push(d);
+      if (!r.firstChunkTime) { r.firstChunkTime = ctx.currentTime; r.firstChunkLen = d.length; }
       let p = 0; for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > p) p = a; }
-      state.rec.peak = p;
+      r.peak = p;
     };
 
-    els.record.classList.add("on"); els.record.textContent = "■ 録音停止";
+    els.record.classList.add("on"); els.record.textContent = "■ 停止";
     els.meter.hidden = false;
+    rebuildTrackButtons();      // 録音中は × を無効化
     if (state.metronome.on) startMetronome(ctx);   // 録音中のメトロノーム（ヘッドホン前提）
-    setStatus("録音中… ピークが -12dBFS 付近になるように（0dBFS でクリップ）");
+    setStatus(mode === "overdub"
+      ? "録音中…（既存の音声を再生中。ヘッドホン推奨）停止すると 録音" +
+        (state.dubs.length + 2) + " として追加されます"
+      : "録音中… ピークが -12dBFS 付近になるように（0dBFS でクリップ）");
     startMeter();
   } catch (err) {
     // 11.7: 権限拒否時はファイル読み込みへ誘導
@@ -1149,21 +1306,87 @@ async function stopRecording() {
   r.active = false;
   cancelAnimationFrame(r.meterRAF);
   stopMetronome();                     // ctx.close() の前にメトロノームを止める
-  const samples = RL.concatFloat32(r.chunks);
+  let samples = RL.concatFloat32(r.chunks);
   const sr = r.ctx.sampleRate;         // 11.3: 実際の SR を使う
+  // モニター再生しながらの重ね録りは、録音の頭をモニター開始時刻 t0 へ揃える。
+  // 補正 = (t0 - 最初のチャンク先頭時刻) + 入出力レイテンシ（11.5 の近似）。
+  if (r.monitorT0 && r.firstChunkTime && samples.length) {
+    const latency = (r.ctx.outputLatency || 0) + (r.ctx.baseLatency || 0);
+    const chunk0Start = r.firstChunkTime - r.firstChunkLen / sr;
+    const trim = Math.round(((r.monitorT0 - chunk0Start) + latency) * sr);
+    if (trim > 0 && trim < samples.length) samples = samples.subarray(trim);
+  }
   try { r.stream.getTracks().forEach((t) => t.stop()); } catch (_) { }
   try { await r.ctx.close(); } catch (_) { }
+  const mode = r.mode;
   state.rec = null;
-  els.record.classList.remove("on"); els.record.textContent = "● 録音";
+  els.record.classList.remove("on");
+  els.record.textContent = "● 録音";
+  els.record.disabled = false;
   els.meter.hidden = true;
+  rebuildTrackButtons();          // × を再度有効化
 
   if (!samples.length) { setStatus("録音が空でした"); return; }
-  // 32bit float WAV へエンコード → ファイル読み込みと同じ /api/session 経路へ流す（11章）
+  // 32bit float WAV へエンコード（11章）
   const wav = RL.encodeWavFloat32(samples, sr);
   const file = new File([new Blob([wav], { type: "audio/wav" })], "recording.wav", { type: "audio/wav" });
+
+  if (mode === "overdub" && state.session) {
+    await createDubFromRecording(file);          // 新しいトラックとして追加
+    return;
+  }
+  // 1本目: ファイル読み込みと同じ /api/session 経路で主トラックを作る。
   const dt = new DataTransfer(); dt.items.add(file);
   els.file.files = dt.files;
   els.file.dispatchEvent(new Event("change"));
+}
+
+// --- 重ねどり（オーバーダブ）レイヤー ---------------------------------------
+// 録音を独立したセッションとしてサーバーで解析し、主ボーカルと同期再生する。
+// ノートはローズ色のバーで表示され、主ボーカルと同様にピッチ・音量を編集できる。
+
+function buildDubEditState(d) {
+  const es = { notes: d.notes, masterGainDb: state.master };
+  if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
+  return es;
+}
+
+async function renderDub(d) {
+  const res = await fetch("/api/render", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: d.sessionId, editState: buildDubEditState(d), mode: "preview" }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  d.buffer = await ensureAudioCtx().decodeAudioData(await res.arrayBuffer());
+  d.dirty = false;
+}
+
+async function createDubFromRecording(file) {
+  setStatus("新しいトラックを解析中…");
+  const fd = new FormData();
+  fd.append("audio", file);
+  try {
+    const res = await fetch("/api/session", { method: "POST", body: fd });
+    if (!res.ok) throw new Error(await res.text());
+    const j = await res.json();
+    j.f0Hz = b64ToF32(j.f0Hz);
+    j.rmsDb = b64ToF32(j.rmsDb);
+    state.sessReg[j.sessionId] = regFromSession(j);   // 削除アンドゥ・昇格に備えて登録
+    const dub = {
+      sessionId: j.sessionId, notes: j.notes, rmsDb: j.rmsDb,
+      buffer: null, dirty: true, enabled: true,
+    };
+    for (const n of dub.notes) n.dub = dub.sessionId;   // 描画・編集でトラックを識別
+    state.dubs.push(dub);
+    pushUndo();
+    rebuildTrackButtons();          // 録音N ボタンを追加
+    resizeCanvases(); draw();
+    await renderDub(dub);
+    setStatus("録音" + (state.dubs.length + 1) +
+      " を追加しました（Tracks ボタンと同色のバー。× で削除できます）");
+  } catch (err) {
+    setStatus("トラック追加エラー: " + err.message);
+  }
 }
 
 function startMeter() {
@@ -1200,6 +1423,10 @@ async function exportAudio() {
         bitDepth: fmt === "mp3" ? 16 : 24,
         mp3Bitrate: 256,
         normalize: els.normalize.checked,
+        // 重ねどりレイヤーをリミッター前で合算してもらう
+        extraVocals: state.dubs.map((d) => ({
+          sessionId: d.sessionId, editState: buildDubEditState(d),
+        })),
       }),
     });
     if (!res.ok) throw new Error(await res.text());
@@ -1238,6 +1465,9 @@ async function renderAndLoad(autoplay) {
     if (seq !== renderSeq) return;   // 古い結果は破棄
     const ctx = ensureAudioCtx();
     state.audio.buffer = await ctx.decodeAudioData(arr);
+    // 重ねどりレイヤーも編集があれば再レンダ（サーバー側キャッシュで無編集フレーズは軽い）
+    for (const d of state.dubs) if (d.dirty) await renderDub(d);
+    if (seq !== renderSeq) return;
     state.dirty = false;
     els.play.disabled = false;
     setStatus("準備完了");
@@ -1256,8 +1486,111 @@ function ensureAudioCtx() {
 }
 
 function playDur() {
-  return state.audio.buffer ? state.audio.buffer.duration
+  let d = state.audio.buffer ? state.audio.buffer.duration
     : (state.session ? state.session.durationSec : 0);
+  for (const dub of state.dubs) if (dub.buffer) d = Math.max(d, dub.buffer.duration);
+  return d;
+}
+
+// --- トラック選択（録音1 = 主ボーカル、録音2〜 = 重ねどり） ---------------
+// ヘッダーのボタンで各トラックの再生 ON/OFF を切り替える。
+// 再生中・録音モニター中でも GainNode の値を書き換えて即反映する。
+
+function trackEnabled(key) {
+  if (key === "main") return state.playMain;
+  const d = state.dubs.find((x) => x.sessionId === key);
+  return d ? d.enabled !== false : false;
+}
+
+function onTrackToggle(key) {
+  rebuildTrackButtons();
+  const on = trackEnabled(key) ? 1 : 0;
+  const pg = state.audio.trackGains && state.audio.trackGains[key];
+  if (pg) pg.gain.value = on;                       // 再生中に即反映
+  const mg = state.rec && state.rec.monGains && state.rec.monGains[key];
+  if (mg) mg.gain.value = on;                       // 録音モニター中に即反映
+}
+
+// トラック色（ボタン用 hex）。0 = 録音1(琥珀)、1〜 = 重ねどり（DUB_COLORS と同色）。
+const TRACK_HEX = ["#e8a23d", "#c96a98", "#9b7fd6", "#98b854", "#5e9fd4"];
+function trackColorHex(trackIdx) {
+  return trackIdx === 0 ? TRACK_HEX[0] : TRACK_HEX[1 + (trackIdx - 1) % 4];
+}
+
+function rebuildTrackButtons() {
+  const show = !!state.session;
+  els.tracksgroup.hidden = !show; els.trackssep.hidden = !show;
+  els.tracks.innerHTML = "";
+  if (!show) return;
+  // ON = トラック色で塗りつぶし + ●、OFF = アウトラインのみ + ○。
+  // 色は CSS ではなくインラインで塗る（DUB_COLORS と同一ソースで確実に同期させる）。
+  // 各トラックの横に小さな × （削除。Cmd/Ctrl+Z で戻せる）。
+  const mk = (label, trackIdx, on, sid, fn) => {
+    const wrap = document.createElement("span");
+    wrap.className = "trackwrap";
+    const b = document.createElement("button");
+    b.className = "trackbtn " + (on ? "on" : "off");
+    const col = trackColorHex(trackIdx);
+    b.textContent = (on ? "● " : "○ ") + label;
+    if (on) {
+      b.style.background = col;
+      b.style.borderColor = col;
+      b.style.color = "#14100b";
+      b.style.fontWeight = "700";
+      b.style.boxShadow = "0 0 0 2px " + col + "44";
+    } else {
+      b.style.background = "transparent";
+      b.style.borderColor = col + "88";
+      b.style.color = col;
+      b.style.opacity = "0.8";
+    }
+    b.title = (on ? "再生 ON（クリックで OFF）" : "再生 OFF（クリックで ON）") +
+      "。録音中のモニターにも反映";
+    b.addEventListener("click", fn);
+    wrap.appendChild(b);
+    const x = document.createElement("button");
+    x.className = "trackx"; x.textContent = "×";
+    const lastOne = trackIdx === 0 && !state.dubs.length;
+    x.disabled = lastOne || (state.rec && state.rec.active) || state.audio.playing;
+    x.title = lastOne ? "最後のトラックは削除できません"
+      : label + " を削除（Cmd/Ctrl+Z で戻せます）";
+    x.addEventListener("click", (e) => { e.stopPropagation(); deleteTrack(sid); });
+    wrap.appendChild(x);
+    els.tracks.appendChild(wrap);
+  };
+  mk("録音1", 0, state.playMain, state.session.sessionId,
+    () => { state.playMain = !state.playMain; onTrackToggle("main"); });
+  state.dubs.forEach((d, i) => mk("録音" + (i + 2), i + 1, d.enabled !== false, d.sessionId,
+    () => { d.enabled = d.enabled === false; onTrackToggle(d.sessionId); }));
+}
+
+// トラック削除。サーバー側セッションはアンドゥ用に残す（曲を開き直すまで）。
+// 録音1 を削除した場合は次のトラックを主トラックへ昇格させる。
+function deleteTrack(sid) {
+  if (state.audio.playing || (state.rec && state.rec.active)) return;
+  if (state.session && sid === state.session.sessionId) {
+    if (!state.dubs.length) return;              // 最後のトラック（× は無効化済み）
+    const d = state.dubs.shift();                // 録音2 を昇格
+    const reg = state.sessReg[d.sessionId];
+    if (!reg) { state.dubs.unshift(d); return; } // 解析データが無ければ中止（異常系）
+    for (const n of d.notes) delete n.dub;       // 主トラックの印に付け替え
+    state.session = Object.assign({}, reg, { notes: d.notes });
+    state.playMain = d.enabled !== false;
+    state.audio.buffer = null;                   // 主バッファは作り直し
+    // 伴奏は新しい主セッションへ付け替え（元ファイルを保持している場合のみ）
+    if (state.backing && state.backing.file) {
+      uploadBacking(state.backing.file, state.backing).catch(() => {});
+    } else if (state.backing) {
+      state.backing = null; els.backinglane.hidden = true;
+    }
+  } else {
+    state.dubs = state.dubs.filter((x) => x.sessionId !== sid);
+  }
+  setSelection([]);
+  rebuildTrackButtons();
+  resizeCanvases(); draw();
+  commitEdit(true);                              // アンドゥ可能 + 再レンダ
+  setStatus("トラックを削除しました（Cmd/Ctrl+Z で戻せます）");
 }
 
 function playAudio() {
@@ -1272,11 +1605,25 @@ function playAudio() {
   let seek = a.playSec || 0;
   if (seek >= dur - 0.02 || seek < 0) seek = 0;
 
-  // ボーカル
+  // トラック（録音1 = 主ボーカル、録音2〜 = 重ねどり）:
+  // すべて同じ t0/seek で開始し（サンプル精度の同期・12.2）、
+  // Tracks ボタンの ON/OFF は各トラックの GainNode で反映する
+  // （再生中に切り替えても即座に効く。ソース自体は常に走らせる）。
   a.vocalGain = ctx.createGain();
   a.vocalGain.connect(ctx.destination);
-  const vsrc = ctx.createBufferSource();
-  vsrc.buffer = a.buffer; vsrc.connect(a.vocalGain);
+  a.trackGains = {};
+  const srcs = [];
+  const addTrack = (key, buffer) => {
+    if (!buffer || seek >= buffer.duration - 0.005) return;   // シークが尻を越えたトラックは鳴らせない
+    const s = ctx.createBufferSource(), g = ctx.createGain();
+    g.gain.value = trackEnabled(key) ? 1 : 0;
+    s.buffer = buffer; s.connect(g); g.connect(a.vocalGain);
+    a.trackGains[key] = g;
+    srcs.push(s);
+  };
+  addTrack("main", a.buffer);
+  for (const d of state.dubs) addTrack(d.sessionId, d.buffer);
+  if (!srcs.length) return;                       // 開始できるトラックがない
 
   // 伴奏（あれば）: 単一 AudioContext 上で同じ t0 基準に開始（AC-18）
   let bsrc = null, sched = { vocalStart: t0, vocalOffset: seek, backingStart: t0, backingOffset: seek };
@@ -1289,13 +1636,16 @@ function playAudio() {
   }
   applyMixGains();   // ミュート/ソロ/音量をゲインノードへ
 
-  // 末尾まで再生し終えたら、再生開始位置に戻して停止（もう一度 Play で同じ所から再生できる）
-  vsrc.onended = () => { if (a.source === vsrc) { a.playSec = a.seekAt; stopAudio(true); } };
-  vsrc.start(sched.vocalStart, sched.vocalOffset);
+  // 最も長いトラックをクロックとし、それが終わったら停止して開始位置へ戻す
+  let clock = srcs[0];
+  for (const s of srcs) if (s.buffer.duration > clock.buffer.duration) clock = s;
+  clock.onended = () => { if (a.source === clock) { a.playSec = a.seekAt; stopAudio(true); } };
+  for (const s of srcs) s.start(sched.vocalStart, sched.vocalOffset);
   if (bsrc) bsrc.start(Math.max(ctx.currentTime, sched.backingStart),
     Math.max(0, sched.backingOffset));
 
-  a.source = vsrc; a.backingSrc = bsrc; a.playing = true; a.startAt = t0; a.seekAt = seek;
+  a.source = clock; a.srcs = srcs; a.backingSrc = bsrc;
+  a.playing = true; a.startAt = t0; a.seekAt = seek;
   setTransportPlaying(true);
   startPlayhead();
 }
@@ -1315,10 +1665,10 @@ function currentPlaySec() {
 function stopAudio(keepPos) {
   const a = state.audio;
   if (a.playing && !keepPos) a.playSec = currentPlaySec();
-  for (const s of [a.source, a.backingSrc]) {
+  for (const s of [...(a.srcs || []), a.backingSrc]) {
     if (s) { try { s.onended = null; s.stop(); } catch (_) { } }
   }
-  a.source = a.backingSrc = null;
+  a.source = a.backingSrc = null; a.srcs = []; a.trackGains = {};
   a.playing = false;
   setTransportPlaying(false);
   stopPlayhead();

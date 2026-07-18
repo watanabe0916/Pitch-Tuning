@@ -23,7 +23,7 @@
 
     <div class="tgroup">
       <span class="tgroup-label">Rec</span>
-      <button id="record" class="rec">● 録音</button>
+      <button id="record" class="rec" title="録音（新しいトラックとして追加。既存の音声を聴きながら重ね録りできます）">● 録音</button>
       <label class="slider" title="テンポ（小節線・メトロノーム）">♩=<input id="bpm" type="number" min="30" max="300" step="1" value="120" style="width:52px" /></label>
       <label class="slider" title="拍子（1小節の拍数）">拍子
         <select id="beats">
@@ -46,6 +46,12 @@
       <button id="tostart" title="再生位置を先頭に戻す" disabled>↩︎</button>
     </div>
     <span class="sep"></span>
+
+    <div class="tgroup" id="tracksgroup" hidden>
+      <span class="tgroup-label">Tracks</span>
+      <span id="tracks" class="tracks"></span>
+    </div>
+    <span class="sep" id="trackssep" hidden></span>
 
     <div class="tgroup">
       <span class="tgroup-label">Mix</span>
@@ -87,7 +93,9 @@
     縦ドラッグ=音高(<b>Shift</b>=1c/Alt=100c) ・ <b>S</b>=分割 ・ 分割線ダブルクリック=結合 ・
     分割線ドラッグ=位置 ・ <b>Ctrl</b>+分割線ドラッグ=遷移区間 ・ <b>G</b>+縦ドラッグ=音量 ・ <b>M</b>=ミュート ・
     空き領域ドラッグ=<b>範囲選択</b> ・ <b>A</b>+クリック=追加選択（選択バーは一括操作）・
-    <b>Cmd/Ctrl+C</b>→カーソルを置いて<b>V</b>=<b>ハモリを任意音程で複製</b> ・ <b>Delete</b>=ハモリ削除
+    <b>Cmd/Ctrl+C</b>→カーソルを置いて<b>V</b>=<b>ハモリを任意音程で複製</b> ・ <b>Delete</b>=ハモリ削除 ・
+    <b>録音</b>=新しいトラックを追加（既存の音声を聴きながら重ね録り）・
+    Tracksの<b>×</b>=トラック削除（Cmd/Ctrl+Zで戻せる）
   </div>
 
   <div id="editor" class="editor">

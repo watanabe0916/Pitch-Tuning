@@ -221,6 +221,15 @@ input[type=range]:disabled::-moz-range-thumb { background: var(--ink-faint); bor
 .backctrls input[type=range] { width: 90px; }
 .backctrls input[type=number] { width: 64px; background: var(--bg-2); color: var(--ink);
   border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 2px 4px; font-family: var(--font-data); }
+/* トラック選択（録音1/録音2…）。点灯 = 再生・モニターで鳴る。
+   色は app.js（TRACK_HEX / DUB_COLORS）がインラインで塗る。
+   ON = トラック色で塗りつぶし + ●、OFF = アウトライン + ○。 */
+.tracks { display: inline-flex; gap: 6px; }
+.trackwrap { display: inline-flex; align-items: center; gap: 2px; }
+.trackbtn { padding: 4px 10px; font-size: 11px; font-family: var(--font-data); }
+.trackx { padding: 2px 6px; font-size: 10px; line-height: 1; opacity: 0.55; }
+.trackx:not(:disabled):hover { opacity: 1; color: var(--red-bright); border-color: var(--red); }
+
 .tgl { padding: 2px 8px; font-size: 11px; }
 .tgl.on {
   background: var(--amber); color: #1a1204; border-color: var(--amber);

@@ -99,14 +99,20 @@ def test_phrase_placement_preserves_timeline():
 
 
 def test_editing_one_phrase_reuses_other_cache():
+    """無編集フレーズは WORLD を通さず原音パススルー。編集したフレーズだけ再合成する。"""
     j = _make_session()
     sid, notes = j["sessionId"], j["notes"]
     sess = SESSIONS[sid]
     es = {"notes": notes, "masterGainDb": 0.0}
-    _render_vocal_signal(sess, es)                          # 初回: 両フレーズをレンダ
-    out0_ph0 = sess.phrases[0].render_out
-    out0_ph1 = sess.phrases[1].render_out
-    assert out0_ph0 is not None and out0_ph1 is not None
+    y0 = _render_vocal_signal(sess, es)                     # 初回: 全フレーズ無編集
+    # 無編集 → どのフレーズも合成されない（パススルー）
+    assert sess.phrases[0].render_out is None
+    assert sess.phrases[1].render_out is None
+    # 出力はフレーズ区間で原音とサンプル一致（リミッター無反応の振幅で作った信号）
+    ph0 = sess.phrases[0]
+    np.testing.assert_allclose(
+        y0[ph0.start_sample:ph0.start_sample + ph0.n_samples],
+        ph0.samples.astype(np.float64), atol=1e-6)
 
     # フレーズ2 のノートだけ +200cent 編集
     edited = copy.deepcopy(notes)
@@ -117,8 +123,13 @@ def test_editing_one_phrase_reuses_other_cache():
                 s["pitchOffsetCents"] = 200.0
     _render_vocal_signal(sess, {"notes": edited, "masterGainDb": 0.0})
 
-    # フレーズ1 はキャッシュ再利用（同一オブジェクト）、フレーズ2 は再レンダ（別オブジェクト）
-    print(f"\nph0 reused={sess.phrases[0].render_out is out0_ph0} "
-          f"ph1 rerendered={sess.phrases[1].render_out is not out0_ph1}")
-    assert sess.phrases[0].render_out is out0_ph0          # 変更なし → キャッシュ命中
-    assert sess.phrases[1].render_out is not out0_ph1      # 変更あり → 再合成
+    # フレーズ1 は依然パススルー（合成なし）、フレーズ2 だけ再合成される
+    assert sess.phrases[0].render_out is None
+    out1_ph1 = sess.phrases[1].render_out
+    assert out1_ph1 is not None
+
+    # 同じ編集で再レンダ → フレーズ2 はキャッシュ命中（同一オブジェクト）
+    _render_vocal_signal(sess, {"notes": edited, "masterGainDb": 0.0})
+    print(f"\nph0 passthrough={sess.phrases[0].render_out is None} "
+          f"ph1 cached={sess.phrases[1].render_out is out1_ph1}")
+    assert sess.phrases[1].render_out is out1_ph1
