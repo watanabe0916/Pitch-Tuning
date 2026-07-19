@@ -147,7 +147,13 @@ function resizeCanvases() {
 }
 
 function draw() {
-  if (!state.session) return;
+  if (!state.session) {
+    // 空状態（全トラック削除後など）: キャンバスを消す
+    els.grid.getContext("2d").clearRect(0, 0, els.grid.width, els.grid.height);
+    els.keys.getContext("2d").clearRect(0, 0, els.keys.width, els.keys.height);
+    updatePlayheadStatic();
+    return;
+  }
   const { contentW, viewH } = layout();
   state.view = makeView(state.session, contentW, viewH);
   renderScene(els.grid.getContext("2d"), state.view, null);
@@ -468,8 +474,10 @@ function commitEdit(changed) {
 let undoStack = [], redoStack = [], lastSnap = null;
 function snapshotState() {
   return JSON.stringify({
-    mainSid: state.session.sessionId,   // トラック削除・昇格も巻き戻せるように主 sid を記録
-    notes: state.session.notes, master: state.master, reverb: state.reverb,
+    // トラック削除・昇格・全削除（空状態）も巻き戻せるように主 sid を記録
+    mainSid: state.session ? state.session.sessionId : null,
+    notes: state.session ? state.session.notes : [],
+    master: state.master, reverb: state.reverb,
     dubs: state.dubs.map((d) => ({ sessionId: d.sessionId, notes: d.notes })),
   });
 }
@@ -485,12 +493,21 @@ function pushUndo() {
 }
 function applySnapshot(snap) {
   const o = JSON.parse(snap);
-  // 主トラックの復元。sid が違う場合（トラック削除で昇格した/戻した）はレジストリから再構築。
-  const mainSid = o.mainSid || state.session.sessionId;
-  if (state.session.sessionId !== mainSid && state.sessReg[mainSid]) {
+  // 主トラックの復元。sid が違う場合（トラック削除で昇格した/戻した/空にした）は
+  // レジストリから再構築する。mainSid が null のスナップショット = 空状態。
+  const mainSid = o.mainSid;
+  if (!mainSid) {
+    state.session = null;
+    state.audio.buffer = null;
+    els.play.disabled = true;
+    els.export.disabled = els.projsave.disabled = true;
+    els.zoomin.disabled = els.zoomout.disabled = true;
+  } else if ((!state.session || state.session.sessionId !== mainSid) && state.sessReg[mainSid]) {
     state.session = Object.assign({}, state.sessReg[mainSid], { notes: o.notes });
     state.audio.buffer = null;          // 主バッファは作り直し（下の renderAndLoad）
-  } else {
+    els.export.disabled = els.projsave.disabled = false;
+    els.zoomin.disabled = els.zoomout.disabled = false;
+  } else if (state.session) {
     state.session.notes = o.notes;
   }
   state.master = o.master;
@@ -1318,16 +1335,18 @@ async function stopRecording() {
     if (trim > 0 && trim < samples.length) samples = samples.subarray(trim);
   }
   // 入力レベルの自動補正: AGC 無効（11.1）のため録音が小さくなりがち。
-  // ピークが -18dBFS を下回ったらピーク -12dBFS までデジタルブースト（上限 +24dB）。
+  // 取り込み時に全テイクをピーク -6dBFS へ正規化する（上限 +24dB ブースト）。
+  // テイク間の音量が揃い、再生音量も十分になる。
   // 注意: SNR は変わらない（ノイズも同量上がる）。根本対策は OS の入力音量を上げること。
   let boostDb = 0;
   {
+    const target = Math.pow(10, -6 / 20);
     let peak = 0;
     for (let i = 0; i < samples.length; i++) {
       const a = Math.abs(samples[i]); if (a > peak) peak = a;
     }
-    if (peak > 0 && peak < Math.pow(10, -18 / 20)) {
-      const g = Math.min(Math.pow(10, -12 / 20) / peak, Math.pow(10, 24 / 20));
+    if (peak > 0 && peak < target) {
+      const g = Math.min(target / peak, Math.pow(10, 24 / 20));
       boostDb = Math.round(20 * Math.log10(g));
       if (boostDb >= 1) {
         const out = new Float32Array(samples.length);
@@ -1581,10 +1600,8 @@ function rebuildTrackButtons() {
     wrap.appendChild(b);
     const x = document.createElement("button");
     x.className = "trackx"; x.textContent = "×";
-    const lastOne = trackIdx === 0 && !state.dubs.length;
-    x.disabled = lastOne || (state.rec && state.rec.active) || state.audio.playing;
-    x.title = lastOne ? "最後のトラックは削除できません"
-      : label + " を削除（Cmd/Ctrl+Z で戻せます）";
+    x.disabled = !!(state.rec && state.rec.active) || state.audio.playing;
+    x.title = label + " を削除（Cmd/Ctrl+Z で戻せます）";
     x.addEventListener("click", (e) => { e.stopPropagation(); deleteTrack(sid); });
     wrap.appendChild(x);
     els.tracks.appendChild(wrap);
@@ -1600,19 +1617,32 @@ function rebuildTrackButtons() {
 function deleteTrack(sid) {
   if (state.audio.playing || (state.rec && state.rec.active)) return;
   if (state.session && sid === state.session.sessionId) {
-    if (!state.dubs.length) return;              // 最後のトラック（× は無効化済み）
-    const d = state.dubs.shift();                // 録音2 を昇格
-    const reg = state.sessReg[d.sessionId];
-    if (!reg) { state.dubs.unshift(d); return; } // 解析データが無ければ中止（異常系）
-    for (const n of d.notes) delete n.dub;       // 主トラックの印に付け替え
-    state.session = Object.assign({}, reg, { notes: d.notes });
-    state.playMain = d.enabled !== false;
-    state.audio.buffer = null;                   // 主バッファは作り直し
-    // 伴奏は新しい主セッションへ付け替え（元ファイルを保持している場合のみ）
-    if (state.backing && state.backing.file) {
-      uploadBacking(state.backing.file, state.backing).catch(() => {});
-    } else if (state.backing) {
-      state.backing = null; els.backinglane.hidden = true;
+    if (state.dubs.length) {
+      const d = state.dubs.shift();                // 録音2 を昇格
+      const reg = state.sessReg[d.sessionId];
+      if (!reg) {
+        state.dubs.unshift(d);
+        setStatus("内部エラー: トラックの解析データが見つからず削除できません");
+        return;
+      }
+      for (const n of d.notes) delete n.dub;       // 主トラックの印に付け替え
+      state.session = Object.assign({}, reg, { notes: d.notes });
+      state.playMain = d.enabled !== false;
+      state.audio.buffer = null;                   // 主バッファは作り直し
+      // 伴奏は新しい主セッションへ付け替え（元ファイルを保持している場合のみ）
+      if (state.backing && state.backing.file) {
+        uploadBacking(state.backing.file, state.backing).catch(() => {});
+      } else if (state.backing) {
+        state.backing = null; els.backinglane.hidden = true;
+      }
+    } else {
+      // 最後のトラックの削除 = 空の状態へ（Cmd/Ctrl+Z で復活できる）
+      state.session = null;
+      state.audio.buffer = null;
+      state.playMain = true;
+      els.play.disabled = els.stop.disabled = true;
+      els.export.disabled = els.projsave.disabled = true;
+      els.zoomin.disabled = els.zoomout.disabled = true;
     }
   } else {
     state.dubs = state.dubs.filter((x) => x.sessionId !== sid);
@@ -1719,6 +1749,9 @@ function setTransportPlaying(playing) {
   for (const el of [els.bvol, els.bmute, els.bsolo, els.boffset, els.bremove])
     el.disabled = playing || !hasBacking;
   els.bfile.disabled = playing || !state.session;
+  // トラックの × の有効/無効を再生状態に追従させる
+  // （再生中に作られたボタンが「無効のまま固定」される不具合の防止）
+  rebuildTrackButtons();
 }
 
 function applyMixGains() {

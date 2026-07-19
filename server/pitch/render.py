@@ -408,23 +408,53 @@ def true_peak_db(x: np.ndarray, oversample: int = 4) -> float:
 
 def true_peak_limit(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
                     oversample: int = 4) -> np.ndarray:
-    """トゥルーピークが天井を超える場合のみ全体を減衰させる（4.2 のリミッター）。
+    """ルックアヘッド・リミッター（4.2）。天井を超える箇所だけ時間可変ゲインで抑える。
 
-    +12dB までブースト可能な仕様のため出力段で必須。これがないとクリップする。
-    既定値で天井から十分低いときはオーバーサンプルを省いて高速化する
-    （プレビューと書き出しで同一判定になるよう決定的に実装）。
+    以前は「超過したら全体を一律に縮める」方式だったが、それだとマスターを
+    上げても縮小で打ち消されて音量がほとんど変わらない。ピーク近傍だけを
+    抑える方式なら、ブースト分が実際のラウドネスに反映される。
+
+    実装: 64 サンプルブロックごとの必要ゲイン（天井/ピーク）を求め、
+    - ルックアヘッド: 直後 6 ブロックの最小値（ピーク到来前から下げ始める）
+    - リリース: 回復速度をブロックあたり 0.5dB に制限（急復帰のポンピング防止）
+    を掛けた包絡をサンプルへ線形補間して乗算する。決定的（プレビュー=書き出し・AC-16）。
+    最後にトゥルーピークを実測し、まだ超えていれば全体を微調整して天井を保証する（AC-21）。
     """
+    if not len(x):
+        return x
     ceil_lin = 10.0 ** (ceiling_dbtp / 20.0)
-    sample_peak = float(np.max(np.abs(x))) + 1e-12 if len(x) else 0.0
+    sample_peak = float(np.max(np.abs(x))) + 1e-12
     # サンプルピークが天井より 1dB 以上低ければ、トゥルーピークも超えない前提で省略。
     if 20.0 * np.log10(sample_peak) < ceiling_dbtp - 1.0:
         return x
+
+    B, LA = 64, 6                       # ブロック長 / ルックアヘッド（≈8ms @48kHz）
+    # ステレオ（mix 書き出し）は両chの大きい方でゲインを決め、同じ包絡を両chへ掛ける
+    mono = np.max(np.abs(x), axis=1) if x.ndim == 2 else np.abs(x)
+    n = len(mono)
+    nb = (n + B - 1) // B
+    a = np.concatenate([mono, np.zeros(nb * B - n)]).reshape(nb, B).max(axis=1)
+    req = np.minimum(1.0, ceil_lin / np.maximum(a, 1e-12))
+    # ルックアヘッド: req'[i] = min(req[i..i+LA-1])
+    padded = np.concatenate([req, np.full(LA - 1, 1.0)])
+    req = np.min(np.stack([padded[k:k + nb] for k in range(LA)]), axis=0)
+    # リリース制限を対数領域の running max で一括計算:
+    #   env[i] = exp(-max_{j<=i}(l[j] - c*(i-j)))、l = -log(req)、c = 回復量/ブロック
+    c = 0.5 / 20.0 * np.log(10.0)       # 0.5dB/ブロック
+    j = np.arange(nb)
+    l = -np.log(np.maximum(req, 1e-12))
+    env_l = np.maximum(np.maximum.accumulate(l + c * j) - c * j, 0.0)
+    env = np.exp(-env_l)
+    genv = np.interp(np.arange(n), j * B + B / 2.0, env)
+    y = x * (genv[:, None] if x.ndim == 2 else genv)
+
+    # トゥルーピークの最終保証（サンプル間ピークの取り残しを全体微調整で抑える）
     from scipy.signal import resample_poly
-    up = resample_poly(x, oversample, 1)
+    up = resample_poly(y, oversample, 1)
     tp = float(np.max(np.abs(up))) + 1e-12
     if tp > ceil_lin:
-        return x * (ceil_lin / tp)
-    return x
+        y = y * (ceil_lin / tp)
+    return y
 
 
 def normalize_true_peak(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
