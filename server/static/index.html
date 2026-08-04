@@ -116,8 +116,10 @@
 
     <label class="snaplabel">スナップ: <span id="snap">50 cent</span></label>
     <span id="status" class="status"></span>
+    <button id="guidetoggle" class="guidebtn" aria-expanded="true" aria-controls="hintbar"
+            title="操作ガイドの表示/非表示">操作ガイド ▲</button>
   </header>
-  <div class="hintbar">
+  <div id="hintbar" class="hintbar">
     縦ドラッグ=音高(<b>Shift</b>=1c/Alt=100c) ・ <b>S</b>=分割 ・ 分割線ダブルクリック=結合 ・
     分割線ドラッグ=位置 ・ <b>Ctrl</b>+分割線ドラッグ=遷移区間 ・ <b>G</b>+縦ドラッグ=音量 ・ <b>M</b>=ミュート ・
     空き領域ドラッグ=<b>範囲選択</b>（画面端で自動スクロール・1秒以上外に出すと加速）・ <b>A</b>+クリック=追加選択（選択バーは一括操作）・

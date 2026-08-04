@@ -93,6 +93,8 @@ const els = {
   delaymixval: document.getElementById("delaymixval"),
   nrate: document.getElementById("nrate"),
   nrateval: document.getElementById("nrateval"),
+  hintbar: document.getElementById("hintbar"),
+  guidetoggle: document.getElementById("guidetoggle"),
   undo: document.getElementById("undo"),
   redo: document.getElementById("redo"),
   hzoomin: document.getElementById("hzoomin"),
@@ -2275,5 +2277,21 @@ async function loadFromUrl(url) {
   els.file.dispatchEvent(new Event("change"));
 }
 if (location.hash === "#demo") window.addEventListener("load", () => loadFromUrl("/api/dev/sample"));
+
+// --- 操作ガイドの開閉 -------------------------------------------------------
+// 閉じるとエディタの高さが変わるので、必ず再レイアウト＋再描画する。
+const GUIDE_KEY = "pitchtuning.guide";
+function setGuideVisible(on) {
+  els.hintbar.hidden = !on;
+  els.guidetoggle.textContent = on ? "操作ガイド ▲" : "操作ガイド ▼";
+  els.guidetoggle.setAttribute("aria-expanded", String(on));
+  try { localStorage.setItem(GUIDE_KEY, on ? "1" : "0"); } catch (_) { /* 保存不可でも動く */ }
+  resizeCanvases(); draw();
+}
+els.guidetoggle.addEventListener("click", () => setGuideVisible(els.hintbar.hidden));
+// 既定は表示。前回閉じていた場合だけ閉じた状態で開く。
+let _guideInit = true;
+try { _guideInit = localStorage.getItem(GUIDE_KEY) !== "0"; } catch (_) { /* 既定のまま */ }
+setGuideVisible(_guideInit);
 
 window.addEventListener("resize", () => { resizeCanvases(); draw(); _followScrollLeft = -1; });
