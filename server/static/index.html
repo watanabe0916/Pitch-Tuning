@@ -65,10 +65,23 @@
       <span class="tgroup-label">History</span>
       <button id="undo" title="元に戻す (Cmd/Ctrl+Z)" disabled>↶</button>
       <button id="redo" title="やり直し (Cmd/Ctrl+Shift+Z)" disabled>↷</button>
-      <button id="zoomout" title="縮小" disabled>－</button>
-      <button id="zoomin" title="拡大" disabled>＋</button>
       <label class="filebtn alt2">プロジェクト読込<input id="projfile" type="file" accept=".json" hidden /></label>
       <button id="projsave" title="プロジェクト保存" disabled>保存</button>
+    </div>
+    <span class="sep"></span>
+
+    <div class="tgroup">
+      <span class="tgroup-label">Zoom</span>
+      <span class="zoomset">
+        <span class="zaxis">↔</span>
+        <button id="hzoomout" title="時間軸を縮小（全体を見渡す）" disabled>－</button>
+        <button id="hzoomin" title="時間軸を拡大（細かいタイミングを見る）" disabled>＋</button>
+      </span>
+      <span class="zoomset">
+        <span class="zaxis">↕</span>
+        <button id="vzoomout" title="音程軸を縮小（音程の行を低く）" disabled>－</button>
+        <button id="vzoomin" title="音程軸を拡大（音程の行を高くして音階を読みやすく）" disabled>＋</button>
+      </span>
     </div>
     <span class="sep"></span>
 
@@ -95,7 +108,8 @@
     空き領域ドラッグ=<b>範囲選択</b> ・ <b>A</b>+クリック=追加選択（選択バーは一括操作）・
     <b>Cmd/Ctrl+C</b>→カーソルを置いて<b>V</b>=<b>ハモリを任意音程で複製</b> ・ <b>Delete</b>=ハモリ削除 ・
     <b>録音</b>=新しいトラックを追加（既存の音声を聴きながら重ね録り）・
-    Tracksの<b>×</b>=トラック削除（Cmd/Ctrl+Zで戻せる）
+    Tracksの<b>×</b>=トラック削除（Cmd/Ctrl+Zで戻せる）・
+    Zoomの<b>↔</b>=時間軸／<b>↕</b>=音程軸 ・ <b>Cmd/Ctrl</b>+ホイール=横ズーム（<b>Shift</b>併用で縦）
   </div>
 
   <div id="editor" class="editor">

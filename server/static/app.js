@@ -22,6 +22,7 @@ const state = {
   master: 0.0,          // masterGainDb
   reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
   pxPerSec: 260,        // 横ズーム率
+  pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
   gKey: false,          // G キー押下中（音量ツール）
   aKey: false,          // A キー押下中（追加選択モード）
@@ -85,8 +86,10 @@ const els = {
   reverbval: document.getElementById("reverbval"),
   undo: document.getElementById("undo"),
   redo: document.getElementById("redo"),
-  zoomin: document.getElementById("zoomin"),
-  zoomout: document.getElementById("zoomout"),
+  hzoomin: document.getElementById("hzoomin"),
+  hzoomout: document.getElementById("hzoomout"),
+  vzoomin: document.getElementById("vzoomin"),
+  vzoomout: document.getElementById("vzoomout"),
   projfile: document.getElementById("projfile"),
   projsave: document.getElementById("projsave"),
 };
@@ -97,19 +100,49 @@ const setStatus = (msg) => { els.status.textContent = msg; };
 
 // 横方向のズーム率。内容幅 = 秒数 × pxPerSec（最低でもビューポート幅を満たす）。
 // これにより長い音声は横スクロールになり、鍵盤列は固定のまま常に見える。
-const MAX_CANVAS_PX = 30000;   // canvas 幅の上限（描画バッファの安全域）
+const MAX_CANVAS_PX = 30000;        // canvas の 1辺の上限（CSS px）
+const MAX_CANVAS_AREA_DEV = 150e6;  // canvas の面積上限（デバイス px²）。これを超えると
+                                    // ブラウザが描画バッファを確保できず真っ白になるため、
+                                    // 縦横を同時に拡大しすぎた場合はここで頭打ちにする。
 
 const gridwrap = () => els.grid.parentElement;
 const keyswrap = () => els.keys.parentElement;
 
-// レイアウト寸法（CSS px）: 内容幅と表示高さ。
+// レイアウト寸法（CSS px）。
+// 横: 内容幅 = 秒数 × pxPerSec。縦: 内容高 = 半音数 × pxPerSemi。
+// pxPerSemi が null のときは全音域がちょうど画面に収まる高さ（＝従来の挙動）。
 function layout() {
   const gw = gridwrap();
-  const viewH = gw.clientHeight;
+  const viewH = gw.clientHeight, viewW = gw.clientWidth;
   const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
-  let contentW = Math.max(gw.clientWidth, dur * state.pxPerSec);
-  contentW = Math.min(contentW, MAX_CANVAS_PX);
-  return { contentW, viewH };
+  let contentW = Math.min(MAX_CANVAS_PX, Math.max(viewW, dur * state.pxPerSec));
+
+  const { lo, hi } = PL.pitchRange(allNotes());
+  const semis = Math.max(1, (hi - lo) / 100);
+  const fitPx = viewH / semis;                       // 全音域が収まる 1半音あたりの高さ
+  const per = Math.max(fitPx, state.pxPerSemi || 0); // 収まりきる高さより小さくはしない
+  let contentH = Math.min(MAX_CANVAS_PX, Math.max(viewH, semis * per));
+
+  // 面積の上限を超えたら、まず縦、それでも足りなければ横を詰める
+  // （どちらもビューポート寸法より小さくはしない）。
+  const dpr = window.devicePixelRatio || 1;
+  let area = contentW * contentH * dpr * dpr;
+  if (area > MAX_CANVAS_AREA_DEV) {
+    contentH = Math.max(viewH, contentH * Math.sqrt(MAX_CANVAS_AREA_DEV / area));
+    area = contentW * contentH * dpr * dpr;
+    if (area > MAX_CANVAS_AREA_DEV) contentW = Math.max(viewW, contentW * (MAX_CANVAS_AREA_DEV / area));
+  }
+  contentW = Math.round(contentW); contentH = Math.round(contentH);
+  return { contentW, contentH, viewW, viewH, fitPx, semis, dur };
+}
+
+// 縦スクロールに合わせて、スクロールしない要素の位置を合わせ直す。
+//  - 鍵盤列: ラッパは固定のまま canvas を上下にずらす（鍵盤側にスクロールバーを出さない）
+//  - 再生ヘッドのつまみ: 内容の先頭ではなく、常に見えている上端に置く
+function syncVScroll() {
+  const top = gridwrap().scrollTop;
+  els.keys.style.top = (-top) + "px";
+  els.phgrab.style.top = top + "px";
 }
 
 // ==========================================================================
@@ -133,18 +166,22 @@ function makeView(session, width, height) {
 // ==========================================================================
 function resizeCanvases() {
   const dpr = window.devicePixelRatio || 1;
-  const { contentW, viewH } = layout();
-  // グリッド: 内容幅ぶんの横長 canvas（ラッパが横スクロールする）
+  const { contentW, contentH } = layout();
+  // グリッド: 内容幅 × 内容高ぶんの canvas（ラッパが縦横にスクロールする）
   els.grid.style.width = contentW + "px";
-  els.grid.style.height = viewH + "px";
+  els.grid.style.height = contentH + "px";
   els.grid.width = Math.round(contentW * dpr);
-  els.grid.height = Math.round(viewH * dpr);
+  els.grid.height = Math.round(contentH * dpr);
   els.grid.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
-  // 鍵盤: 固定幅 × 表示高さ
+  // 鍵盤: 固定幅 × 内容高（グリッドと同じ縦スケール）
   const kw = keyswrap().clientWidth;
+  els.keys.style.height = contentH + "px";
   els.keys.width = Math.round(kw * dpr);
-  els.keys.height = Math.round(viewH * dpr);
+  els.keys.height = Math.round(contentH * dpr);
   els.keys.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 再生ヘッドの縦線も内容高いっぱいに伸ばす
+  els.playhead.style.height = contentH + "px";
+  syncVScroll();
 }
 
 function draw() {
@@ -155,10 +192,11 @@ function draw() {
     updatePlayheadStatic();
     return;
   }
-  const { contentW, viewH } = layout();
-  state.view = makeView(state.session, contentW, viewH);
+  const { contentW, contentH } = layout();
+  state.view = makeView(state.session, contentW, contentH);
   renderScene(els.grid.getContext("2d"), state.view, null);
   drawKeys();
+  syncVScroll();
   if (state.backing) drawBacking();
   updatePlayheadStatic();   // ズーム/スクロール後も再生ヘッドを正しい位置へ
 }
@@ -207,11 +245,12 @@ function drawDragFrame() {
   // 可視範囲（デバイスピクセル）
   const dx = Math.max(0, Math.floor(gw.scrollLeft * dpr));
   const dw = Math.min(els.grid.width - dx, Math.ceil(gw.clientWidth * dpr) + 1);
-  const dh = els.grid.height;
+  const dy = Math.max(0, Math.floor(gw.scrollTop * dpr));
+  const dh = Math.min(els.grid.height - dy, Math.ceil(gw.clientHeight * dpr) + 1);
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(dx, 0, dw, dh);
-  ctx.drawImage(_bg, dx, 0, dw, dh, dx, 0, dw, dh);   // 同じ矩形をコピー
+  ctx.clearRect(dx, dy, dw, dh);
+  ctx.drawImage(_bg, dx, dy, dw, dh, dx, dy, dw, dh);   // 同じ矩形をコピー
   ctx.restore();                                        // dpr 変換に戻す
   for (const seg of state.drag.liveSegs) {
     const loc = locateSeg(seg);
@@ -502,12 +541,12 @@ function applySnapshot(snap) {
     state.audio.buffer = null;
     els.play.disabled = true;
     els.export.disabled = els.projsave.disabled = true;
-    els.zoomin.disabled = els.zoomout.disabled = true;
+    setZoomEnabled(false);
   } else if ((!state.session || state.session.sessionId !== mainSid) && state.sessReg[mainSid]) {
     state.session = Object.assign({}, state.sessReg[mainSid], { notes: o.notes });
     state.audio.buffer = null;          // 主バッファは作り直し（下の renderAndLoad）
     els.export.disabled = els.projsave.disabled = false;
-    els.zoomin.disabled = els.zoomout.disabled = false;
+    setZoomEnabled(true);
   } else if (state.session) {
     state.session.notes = o.notes;
   }
@@ -928,19 +967,72 @@ els.reverb.addEventListener("change", () => commitEdit(true));
 els.undo.addEventListener("click", undo);
 els.redo.addEventListener("click", redo);
 
+// 4つのズームボタンをまとめて有効化/無効化する。
+function setZoomEnabled(on) {
+  els.hzoomin.disabled = els.hzoomout.disabled = !on;
+  els.vzoomin.disabled = els.vzoomout.disabled = !on;
+}
+
+// 横（時間軸）ズーム: 1秒あたりの幅を変える。
+// 縮小しきると曲全体を見渡せ、拡大しきると 1 フレーム（5ms）単位の揺れまで見える。
+// 画面中央の時刻を保ったままスケールするので、見ている場所を見失わない。
+const MAX_PX_PER_SEC = 12000;
 function zoomBy(factor) {
   if (!state.session) return;
-  state.pxPerSec = Math.max(40, Math.min(2000, state.pxPerSec * factor));
+  const gw = gridwrap();
+  const before = layout();
+  const viewW = before.viewW;
+  const centerRatio = (gw.scrollLeft + viewW / 2) / before.contentW;
+  // 下限は「全体が画面に収まる幅」。それ以上縮めても見た目が変わらないので、
+  // 押し続けても状態だけが際限なく小さくなる（＝拡大に戻すのに何度も押す）のを防ぐ。
+  const fitSec = viewW / before.dur;
+  state.pxPerSec = Math.max(fitSec, Math.min(MAX_PX_PER_SEC, state.pxPerSec * factor));
   resizeCanvases(); draw();
+  const after = layout();
+  gw.scrollLeft = Math.max(0, Math.min(after.contentW - viewW, centerRatio * after.contentW - viewW / 2));
   _followScrollLeft = -1;   // 内容幅が変わると scrollLeft も動くので、追従の基準を取り直す
+  // 実際に適用された値で状態を上書きし、そのまま表示する
+  // （canvas の上限で頭打ちになったことが分かり、次の縮小もすぐ効く）。
+  const eff = after.contentW / after.dur;
+  const capped = eff < state.pxPerSec * 0.99;
+  state.pxPerSec = eff;
+  setStatus(`横ズーム ${eff.toFixed(eff < 100 ? 1 : 0)}px/秒` + (capped ? "（上限）" : ""));
 }
-els.zoomin.addEventListener("click", () => zoomBy(1.4));
-els.zoomout.addEventListener("click", () => zoomBy(1 / 1.4));
-// Cmd/Ctrl + ホイールで拡大縮小
+
+// 縦ズーム（＋/－ボタン）: 1半音あたりの高さを変える。
+// 行が高くなるほど、音程バーがどの音階の行にあるかが読み取りやすくなる。
+// 画面中央にある音程を保ったままスケールするので、見ている場所を見失わない。
+const MAX_PX_PER_SEMI = 600;
+function zoomVBy(factor) {
+  if (!state.session) return;
+  const gw = gridwrap();
+  const before = layout();
+  const viewH = before.viewH;
+  // ズーム前に画面中央に見えていた位置（内容高に対する比率）
+  const centerRatio = (gw.scrollTop + viewH / 2) / before.contentH;
+  const per = Math.max(before.fitPx, Math.min(MAX_PX_PER_SEMI, (state.pxPerSemi || before.fitPx) * factor));
+  // 収まりきる高さまで縮めたら auto-fit に戻す（ウィンドウ幅変更にも追従するように）
+  state.pxPerSemi = per <= before.fitPx * 1.001 ? null : per;
+  resizeCanvases(); draw();
+  const after = layout();
+  gw.scrollTop = Math.max(0, Math.min(after.contentH - viewH, centerRatio * after.contentH - viewH / 2));
+  syncVScroll();
+  if (!state.pxPerSemi) { setStatus("縦ズーム: 全音域を表示"); return; }
+  const eff = after.contentH / after.semis;   // 実際に適用された 1半音あたりの高さ
+  const capped = eff < state.pxPerSemi * 0.99;
+  state.pxPerSemi = eff;                      // 頭打ちなら状態も実効値に揃える
+  setStatus(`縦ズーム ${eff.toFixed(0)}px/半音` + (capped ? "（上限）" : ""));
+}
+els.hzoomin.addEventListener("click", () => zoomBy(1.4));
+els.hzoomout.addEventListener("click", () => zoomBy(1 / 1.4));
+els.vzoomin.addEventListener("click", () => zoomVBy(1.4));
+els.vzoomout.addEventListener("click", () => zoomVBy(1 / 1.4));
+// Cmd/Ctrl + ホイール = 横（時間軸）ズーム、Shift も足すと縦（音程軸）ズーム
 gridwrap().addEventListener("wheel", (e) => {
   if (!(e.ctrlKey || e.metaKey) || !state.session) return;
   e.preventDefault();
-  zoomBy(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  if (e.shiftKey) zoomVBy(f); else zoomBy(f);
 }, { passive: false });
 
 // プロジェクト保存: EditState を JSON でダウンロード（音声は含まない・13.4）
@@ -1009,7 +1101,7 @@ els.file.addEventListener("change", async (e) => {
     setStatus(`${j.durationSec.toFixed(2)}s / ${j.sampleRate}Hz / ${j.notes.length}ノート ${nSeg}セグメント`);
     els.export.disabled = false;
     els.bfile.disabled = false;   // 伴奏追加を有効化
-    els.zoomin.disabled = els.zoomout.disabled = els.projsave.disabled = false;
+    setZoomEnabled(true); els.projsave.disabled = false;
     setSelection([]); state.clipboard = null;   // 選択・クリップボードをリセット
 
     // 新しい曲を開いた: 以前の全セッション（主 + 追加トラック + 削除アンドゥ用の保持分）を
@@ -1167,8 +1259,9 @@ els.bremove.addEventListener("click", async () => {
   els.backinglane.hidden = true;
 });
 
-// グリッドと伴奏レーンの横スクロールを同期（時間軸を揃える）。
+// グリッドのスクロール: 縦は鍵盤列、横は伴奏レーン（時間軸）と同期させる。
 els.grid.parentElement.addEventListener("scroll", () => {
+  syncVScroll();
   if (!state.backing) return;
   els.bcanvas.parentElement.scrollLeft = els.grid.parentElement.scrollLeft;
 });
@@ -1644,7 +1737,7 @@ function deleteTrack(sid) {
       state.playMain = true;
       els.play.disabled = els.stop.disabled = true;
       els.export.disabled = els.projsave.disabled = true;
-      els.zoomin.disabled = els.zoomout.disabled = true;
+      setZoomEnabled(false);
     }
   } else {
     state.dubs = state.dubs.filter((x) => x.sessionId !== sid);
