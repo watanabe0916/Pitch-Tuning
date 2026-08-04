@@ -117,7 +117,7 @@ function layout() {
   const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
   let contentW = Math.min(MAX_CANVAS_PX, Math.max(viewW, dur * state.pxPerSec));
 
-  const { lo, hi } = PL.pitchRange(allNotes());
+  const { lo, hi } = viewRange();
   const semis = Math.max(1, (hi - lo) / 100);
   const fitPx = viewH / semis;                       // 全音域が収まる 1半音あたりの高さ
   const per = Math.max(fitPx, state.pxPerSemi || 0); // 収まりきる高さより小さくはしない
@@ -134,6 +134,22 @@ function layout() {
   }
   contentW = Math.round(contentW); contentH = Math.round(contentH);
   return { contentW, contentH, viewW, viewH, fitPx, semis, dur };
+}
+
+// 音源を読み込んだ直後の初期表示: 縦軸そのものは固定範囲のまま、
+// 「収録された音域がちょうど画面いっぱいに見える」ズーム率とスクロール位置にする。
+// 上下に動かす余地は常にあり、スクロールすれば固定範囲の端まで届く。
+function fitViewToNotes() {
+  if (!state.session) return;
+  const gw = gridwrap();
+  const viewH = gw.clientHeight;
+  const nr = PL.pitchRange(state.session.notes);      // 収録音源の音域（±300cent マージン込み）
+  const semis = Math.max(4, (nr.hi - nr.lo) / 100);   // 極端に狭い素材でも拡大しすぎない
+  state.pxPerSemi = Math.min(MAX_PX_PER_SEMI, viewH / semis);
+  resizeCanvases(); draw();
+  const y = state.view.centsToY((nr.lo + nr.hi) / 2);  // 収録音域の中心を画面中央へ
+  gw.scrollTop = Math.max(0, Math.min(state.view.height - viewH, y - viewH / 2));
+  syncVScroll();
 }
 
 // 縦スクロールに合わせて、スクロールしない要素の位置を合わせ直す。
@@ -155,8 +171,25 @@ function allNotes() {
   return arr;
 }
 
+// 縦軸（音程）の表示範囲はシステム固定にする。
+// 収録音源の音域に合わせて可変にすると、バーを上下させるたびに軸が伸び縮みし、
+// 狭い音域の素材では少し動かしただけでバーが画面外へ消えてしまうため。
+// C2(MIDI 36, 65Hz) 〜 C6(MIDI 84, 1047Hz)。人声の基音はほぼこの中に収まる。
+const PITCH_MIN_CENTS = 3600, PITCH_MAX_CENTS = 8400;
+
+// 実際の表示範囲。原則は固定範囲。万一ノートがそれを超えた場合だけ広げる（安全網）。
+function viewRange() {
+  let lo = PITCH_MIN_CENTS, hi = PITCH_MAX_CENTS;
+  for (const n of allNotes()) for (const s of n.segments) {
+    const c = s.baseCents + s.pitchOffsetCents;
+    if (c - 200 < lo) lo = Math.floor((c - 200) / 100) * 100;
+    if (c + 200 > hi) hi = Math.ceil((c + 200) / 100) * 100;
+  }
+  return { lo, hi };
+}
+
 function makeView(session, width, height) {
-  const { lo, hi } = PL.pitchRange(allNotes());
+  const { lo, hi } = viewRange();
   const t0 = 0, t1 = Math.max(session.durationSec, 0.5);
   return PL.makeTransforms(t0, t1, lo, hi, width, height);
 }
@@ -765,8 +798,16 @@ window.addEventListener("mousemove", (e) => {
     // 端での自動スクロールは marqueeAutoScrollTick が毎フレーム面倒を見る
   } else if (d.mode === "pitch") {
     updateSnapLabel(e);
-    // 主バーのスナップ済み差分を全選択バーに適用（相対移動）
-    const delta = PL.computeDragOffset(0, e.clientY - d.startY, v.centsPerPixel, mods(e));
+    // 主バーのスナップ済み差分を全選択バーに適用（相対移動）。
+    // 固定範囲（C2〜C6）を出ないよう、グループ全体で許される範囲に差分をクランプする。
+    let delta = PL.computeDragOffset(0, e.clientY - d.startY, v.centsPerPixel, mods(e));
+    let dMin = -Infinity, dMax = Infinity;
+    for (const g of d.group) {
+      const c0 = g.seg.baseCents + g.start;
+      dMin = Math.max(dMin, PITCH_MIN_CENTS - c0);
+      dMax = Math.min(dMax, PITCH_MAX_CENTS - c0);
+    }
+    delta = Math.max(dMin, Math.min(dMax, delta));
     for (const g of d.group) g.seg.pitchOffsetCents = g.start + delta;
   } else if (d.mode === "gain") {
     // 行1つ(=100cent高)を 24dB 相当にマップ。0.5dB スナップ。
@@ -1017,7 +1058,11 @@ function zoomVBy(factor) {
   const after = layout();
   gw.scrollTop = Math.max(0, Math.min(after.contentH - viewH, centerRatio * after.contentH - viewH / 2));
   syncVScroll();
-  if (!state.pxPerSemi) { setStatus("縦ズーム: 全音域を表示"); return; }
+  if (!state.pxPerSemi) {
+    const { lo, hi } = viewRange();
+    setStatus(`縦ズーム: 全範囲を表示（${centsToName(lo)}〜${centsToName(hi)}）`);
+    return;
+  }
   const eff = after.contentH / after.semis;   // 実際に適用された 1半音あたりの高さ
   const capped = eff < state.pxPerSemi * 0.99;
   state.pxPerSemi = eff;                      // 頭打ちなら状態も実効値に揃える
@@ -1115,7 +1160,7 @@ els.file.addEventListener("change", async (e) => {
     state.dubs = [];
     state.sessReg = {}; state.sessReg[j.sessionId] = regFromSession(j);
     state.playMain = true;
-    resizeCanvases(); draw();
+    fitViewToNotes();               // 収録音域が画面いっぱいに見える縦ズーム・位置にする
     rebuildTrackButtons();          // ヘッダーの 録音1/録音2… ボタンを更新
     initUndo();                   // アンドゥ履歴を初期化
     // 伴奏の引き継ぎ: 旧セッションに伴奏があれば、新セッションへ自動で再アップロード
