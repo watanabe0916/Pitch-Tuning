@@ -442,6 +442,66 @@ def _delay_tap(x: np.ndarray, sample_rate: int, delay_samples: float,
 DELAY_MAX_TAIL_SEC = 8.0      # 繰り返しの尾の上限（長い間隔 × 強い FB での暴走を防ぐ）
 
 
+# --------------------------------------------------------------------------
+# ノイズ低減（下方伸張 / ダウンワード・エキスパンダー）
+# --------------------------------------------------------------------------
+
+GATE_SMOOTH_SEC = 0.030        # ゲイン曲線の平滑化幅（急に閉じるとブツッと鳴る）
+GATE_ENV_SEC = 0.012           # 入力包絡を測る窓
+GATE_THRESH_OVER_FLOOR_DB = 10.0   # 閾値をノイズフロア推定より何dB上に置くか
+GATE_KNEE_DB = 12.0            # 閾値からこれだけ下がった所で指定の減衰量に達する
+
+
+def apply_noise_gate(x: np.ndarray, sample_rate: int, gate: dict) -> np.ndarray:
+    """小さい音ほど強く下げて、声の合間のサーというノイズを目立たなくする。
+
+    マスターを上げるとノイズだけが大きくなるのは、出力段のリミッターが
+    「大きい所だけ」を抑えるため。声は天井で頭打ちになる一方、ノイズは天井から
+    遠いのでマスターぶんだけ素通しで持ち上がる。そこで **声が鳴っていない間の
+    レベルを下げる**ことで、マスターを上げてもノイズが付いてこないようにする。
+
+    - 閾値は素材から自動推定する（下位パーセンタイル＝ノイズフロア）。
+      録音環境ごとにノイズの絶対値は違うので、固定値では使い物にならない。
+    - 声を削らないよう、閾値はピークから十分下に制限する。
+    - ゲイン曲線は 30ms 幅で平滑化してから掛ける。急に開閉するとブツッと鳴り、
+      息継ぎの前後が不自然に途切れる（3.6 のゲイン連続性と同じ理由）。
+    - **空間系より前**に置く。後ろに置くとノイズにリバーブ/ディレイが掛かり、
+      かえって目立つ。
+    """
+    if not gate or not len(x):
+        return x
+    # reductionDb: 負の値 = 何dB下げるか。0 で off。
+    depth = -float(gate.get("reductionDb", 0.0))
+    if depth <= 0.0 and gate.get("amount"):        # 旧形式（0..1 の強さ）との互換
+        depth = 36.0 * max(0.0, min(1.0, float(gate["amount"])))
+    if depth <= 0.01:
+        return x
+    from scipy.signal import fftconvolve
+
+    # --- 入力包絡（RMS）---
+    w = max(4, int(GATE_ENV_SEC * sample_rate))
+    k = np.hanning(w); k /= k.sum()
+    env = np.sqrt(np.maximum(fftconvolve(x * x, k, mode="same"), 0.0))
+    env_db = 20.0 * np.log10(env + 1e-12)
+
+    # --- 閾値: ノイズフロア推定より少し上に自動で置く ---
+    floor_db = float(np.percentile(env_db, 20))     # 静かな側 ＝ ノイズフロア
+    peak_db = float(np.percentile(env_db, 99))      # 声のピーク
+    thr = min(floor_db + GATE_THRESH_OVER_FLOOR_DB, peak_db - 14.0)   # 声は削らない
+
+    # --- 下方伸張: 閾値より下を伸張し、指定の深さで頭打ちにする ---
+    # 閾値から GATE_KNEE_DB 下がった所でちょうど depth に達する傾き。
+    # depth を変えても「効き始める位置」は変わらないので、つまみの意味が一貫する。
+    below = np.minimum(0.0, env_db - thr)
+    red_db = np.maximum(-depth, below * (depth / GATE_KNEE_DB))
+
+    # --- 平滑化してから線形へ（境界のクリック防止）---
+    ws = max(4, int(GATE_SMOOTH_SEC * sample_rate))
+    ks = np.hanning(ws); ks /= ks.sum()
+    red_db = fftconvolve(red_db, ks, mode="same")
+    return x * (10.0 ** (red_db / 20.0))
+
+
 def apply_delay(x: np.ndarray, sample_rate: int, delay: dict) -> np.ndarray:
     """ディレイ。パラメータは Time / Feedback / Mix の3つ。
 

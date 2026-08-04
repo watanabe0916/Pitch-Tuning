@@ -30,6 +30,7 @@ from pitch.segmentation import segment_notes
 from pitch.phrases import detect_phrases
 from pitch.render import render_output, mix_vocal_backing, \
     true_peak_limit, normalize_true_peak, apply_reverb, apply_delay, \
+    apply_noise_gate, \
     render_f0, synthesize, render_gain
 from pitch.schema import (notes_to_json, notes_from_json, f32_to_b64,
                           note_to_dict, note_from_dict, segment_from_dict)
@@ -299,6 +300,8 @@ def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
     out = np.zeros(total, dtype=np.float64)
     for s, y in parts:
         out[s:s + len(y)] += y                        # 元の位置へ加算配置
+    # ノイズ低減は空間系より前（ノイズに残響やディレイを掛けないため）。
+    out = apply_noise_gate(out, sess.sample_rate, es.get("noiseGate"))
     # 空間系は全ボイス合算後に一括適用。ディレイ→リバーブの順（繰り返しにも残響が乗る）。
     out = apply_delay(out, sess.sample_rate, es.get("delay"))
     out = apply_reverb(out, sess.sample_rate, es.get("reverb"))

@@ -22,6 +22,7 @@ const state = {
   master: 0.0,          // masterGainDb
   reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
   delay: { timeMs: 28, feedback: 0.3, mix: 0.0 },   // 出力段ディレイ（mix=0 で off）
+  noiseGate: { reductionDb: 0 },         // ノイズ低減（何dB下げるか・0 で off）
   pxPerSec: 260,        // 横ズーム率
   pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
@@ -90,6 +91,8 @@ const els = {
   delayfbval: document.getElementById("delayfbval"),
   delaymix: document.getElementById("delaymix"),
   delaymixval: document.getElementById("delaymixval"),
+  nrate: document.getElementById("nrate"),
+  nrateval: document.getElementById("nrateval"),
   undo: document.getElementById("undo"),
   redo: document.getElementById("redo"),
   hzoomin: document.getElementById("hzoomin"),
@@ -624,6 +627,7 @@ function snapshotState() {
     mainSid: state.session ? state.session.sessionId : null,
     notes: state.session ? state.session.notes : [],
     master: state.master, reverb: state.reverb, delay: state.delay,
+    noiseGate: state.noiseGate,
     dubs: state.dubs.map((d) => ({ sessionId: d.sessionId, notes: d.notes })),
   });
 }
@@ -659,6 +663,7 @@ function applySnapshot(snap) {
   state.master = o.master;
   state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
   state.delay = o.delay || { timeMs: 28, feedback: 0.3, mix: 0 };
+  state.noiseGate = o.noiseGate || { reductionDb: 0 };
   // 追加トラックの復元: スナップショットの一覧に合わせて再構成する。
   // 現存すればノートだけ差し替え、削除済みならレジストリから復活（バッファは dirty で再レンダ）。
   const newDubs = [];
@@ -677,7 +682,7 @@ function applySnapshot(snap) {
   // UI 同期
   els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
   els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
-  syncDelayUI();
+  syncDelayUI(); syncNoiseUI();
   syncSliders();
   state.dirty = true;
   draw();
@@ -1147,6 +1152,25 @@ function normalizeDelay(d) {
   if (o.mix == null && d && d.level != null) o.mix = d.level;
   return { timeMs: +o.timeMs, feedback: +o.feedback, mix: +o.mix };
 }
+// ノイズ低減はスライダーを右へ動かすほど強く下げる（表示は実際の減衰量 dB）。
+// 保存済みプロジェクトの旧形式（amount = 0..1 の強さ）も読めるようにする。
+function normalizeNoiseGate(g) {
+  if (!g) return { reductionDb: 0 };
+  if (g.reductionDb != null) return { reductionDb: +g.reductionDb };
+  if (g.amount != null) return { reductionDb: -Math.round(36 * +g.amount) };
+  return { reductionDb: 0 };
+}
+function noiseLabel(db) { return db < 0 ? db + "dB" : "OFF"; }
+function syncNoiseUI() {
+  els.nrate.value = -state.noiseGate.reductionDb;
+  els.nrateval.textContent = noiseLabel(state.noiseGate.reductionDb);
+}
+els.nrate.addEventListener("input", () => {
+  state.noiseGate.reductionDb = -parseFloat(els.nrate.value);
+  els.nrateval.textContent = noiseLabel(state.noiseGate.reductionDb);
+});
+els.nrate.addEventListener("change", () => commitEdit(true));
+
 function syncDelayUI() {
   els.delaytime.value = Math.round(state.delay.timeMs);
   els.delayfb.value = state.delay.feedback;
@@ -1314,9 +1338,10 @@ els.projfile.addEventListener("change", async (e) => {
     state.master = es.masterGainDb || 0;
     state.reverb = es.reverb || { mix: 0, decaySec: 1.2 };
     state.delay = normalizeDelay(es.delay);
+    state.noiseGate = normalizeNoiseGate(es.noiseGate);
     els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
     els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
-    syncDelayUI();
+    syncDelayUI(); syncNoiseUI();
     setSelection([]); state.clipboard = null;
     initUndo(); draw(); state.dirty = true; renderAndLoad(false);
     setStatus("プロジェクトを読み込みました");
@@ -1413,6 +1438,7 @@ function buildEditState() {
   if (harms.length) es.harmonies = harms.map((notes) => ({ notes }));
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
   if (state.delay.mix > 0) es.delay = { ...state.delay };
+  if (state.noiseGate.reductionDb < 0) es.noiseGate = { ...state.noiseGate };
   if (state.backing) es.backing = {
     offsetSec: state.backing.offsetSec, gainDb: state.backing.gainDb,
     mute: state.backing.mute, solo: state.backing.solo,
@@ -1750,6 +1776,7 @@ function buildDubEditState(d) {
   const es = { notes: d.notes, masterGainDb: state.master };
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
   if (state.delay.mix > 0) es.delay = { ...state.delay };
+  if (state.noiseGate.reductionDb < 0) es.noiseGate = { ...state.noiseGate };
   return es;
 }
 

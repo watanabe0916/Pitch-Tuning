@@ -58,6 +58,7 @@
       <label class="slider">Master <input id="master" type="range" min="-24" max="24" step="0.5" value="0" /><span id="masterval">0dB</span></label>
       <label class="slider">補正 <input id="strength" type="range" min="0" max="1" step="0.05" value="0" disabled /><span id="strengthval">–</span></label>
       <label class="slider" title="残響の量（センド）。元の声は減らさず、残響を足していきます">残響 <input id="reverb" type="range" min="0" max="1" step="0.05" value="0" /><span id="reverbval">0%</span></label>
+      <label class="slider" title="声の合間のサーというノイズを何dB下げるか。右へ動かすほど強く下がります（OFF で無処理）">ノイズ低減 <input id="nrate" type="range" min="0" max="40" step="1" value="0" /><span id="nrateval">OFF</span></label>
     </div>
     <span class="sep"></span>
 
@@ -123,7 +124,7 @@
     <b>Cmd/Ctrl+C</b>→カーソルを置いて<b>V</b>=<b>ハモリを任意音程で複製</b> ・ <b>Delete</b>=ハモリ削除 ・
     <b>録音</b>=新しいトラックを追加（既存の音声を聴きながら重ね録り）・
     Tracksの<b>×</b>=トラック削除（Cmd/Ctrl+Zで戻せる）・
-    ホイール=上下スクロール／<b>Shift</b>+ホイール=左右 ・ Zoomの<b>↔</b>=時間軸／<b>↕</b>=音程軸 ・ <b>Cmd/Ctrl</b>+ホイール=横ズーム（<b>Shift</b>併用で縦）
+    ホイール=上下スクロール／<b>Shift</b>+ホイール=左右 ・ Masterを上げてノイズが気になるときは<b>ノイズ低減</b> ・ Zoomの<b>↔</b>=時間軸／<b>↕</b>=音程軸 ・ <b>Cmd/Ctrl</b>+ホイール=横ズーム（<b>Shift</b>併用で縦）
   </div>
 
   <div id="editor" class="editor">
