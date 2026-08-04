@@ -139,6 +139,14 @@ function ensureSpacers() {
   if (_spacersReady) return;
   els.gridspace = makeSpacer("gridspace", gridwrap(), els.grid);
   els.bspace = makeSpacer("bspace", els.bcanvas.parentElement, els.bcanvas);
+  // スクロールの可否も JS で確定させる。CSS だけに任せると、古い CSS が
+  // キャッシュされていたときに「自動スクロールは動くのにホイールでは動かない」
+  // （overflow:hidden でもプログラムからの scrollTop は効くため）という
+  // 分かりにくい状態になる。
+  Object.assign(gridwrap().style, { position: "relative", overflowX: "auto", overflowY: "auto" });
+  Object.assign(keyswrap().style, { position: "relative", overflow: "hidden" });
+  Object.assign(els.bcanvas.parentElement.style,
+                { position: "relative", overflowX: "auto", overflowY: "hidden" });
   _spacersReady = true;
 }
 
@@ -1192,12 +1200,54 @@ els.hzoomin.addEventListener("click", () => zoomBy(1.4));
 els.hzoomout.addEventListener("click", () => zoomBy(1 / 1.4));
 els.vzoomin.addEventListener("click", () => zoomVBy(1.4));
 els.vzoomout.addEventListener("click", () => zoomVBy(1 / 1.4));
-// Cmd/Ctrl + ホイール = 横（時間軸）ズーム、Shift も足すと縦（音程軸）ズーム
+// ホイール操作:
+//   そのまま        = 縦スクロール（音程方向）／トラックパッドの横スワイプは横スクロール
+//   Shift           = 横スクロール（時間方向）
+//   Cmd/Ctrl        = 横ズーム、Shift も足すと縦ズーム
+// スクロールは自前で処理する。ブラウザ任せにすると、CSS の overflow 指定に依存して
+// 「ホイールだけ効かない」状態が起きうるため。端に達したときは preventDefault せず、
+// 外側へスクロールを渡す（スクロールの閉じ込めを避ける）。
+const WHEEL_LINE_PX = 16;    // deltaMode=行 のときの 1行あたり px
+function wheelDelta(e) {
+  const k = e.deltaMode === 1 ? WHEEL_LINE_PX
+          : e.deltaMode === 2 ? gridwrap().clientHeight : 1;
+  return { dx: e.deltaX * k, dy: e.deltaY * k };
+}
 gridwrap().addEventListener("wheel", (e) => {
-  if (!(e.ctrlKey || e.metaKey) || !state.session) return;
-  e.preventDefault();
-  const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-  if (e.shiftKey) zoomVBy(f); else zoomBy(f);
+  if (!state.session) return;
+  if (e.ctrlKey || e.metaKey) {                 // ズーム
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    if (e.shiftKey) zoomVBy(f); else zoomBy(f);
+    return;
+  }
+  const gw = gridwrap();
+  let { dx, dy } = wheelDelta(e);
+  if (e.shiftKey && !dx) { dx = dy; dy = 0; }   // Shift+ホイール = 横スクロール
+  const maxY = Math.max(0, gw.scrollHeight - gw.clientHeight);
+  const maxX = Math.max(0, gw.scrollWidth - gw.clientWidth);
+  let moved = false;
+  if (dy && maxY > 0) {
+    const ns = Math.max(0, Math.min(maxY, gw.scrollTop + dy));
+    if (ns !== gw.scrollTop) { gw.scrollTop = ns; moved = true; }
+  }
+  if (dx && maxX > 0) {
+    const ns = Math.max(0, Math.min(maxX, gw.scrollLeft + dx));
+    if (ns !== gw.scrollLeft) { gw.scrollLeft = ns; moved = true; }
+  }
+  if (moved) e.preventDefault();
+}, { passive: false });
+
+// 鍵盤の上でホイールを回しても音程方向にスクロールできるようにする
+// （鍵盤列自体はスクロールしないので、グリッド側へ転送する）。
+keyswrap().addEventListener("wheel", (e) => {
+  if (!state.session) return;
+  const gw = gridwrap();
+  const maxY = Math.max(0, gw.scrollHeight - gw.clientHeight);
+  if (maxY <= 0) return;
+  const { dy } = wheelDelta(e);
+  const ns = Math.max(0, Math.min(maxY, gw.scrollTop + dy));
+  if (ns !== gw.scrollTop) { gw.scrollTop = ns; e.preventDefault(); }
 }, { passive: false });
 
 // プロジェクト保存: EditState を JSON でダウンロード（音声は含まない・13.4）
