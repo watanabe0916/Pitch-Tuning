@@ -31,6 +31,7 @@ const state = {
     backingSrc: null, vocalGain: null, backingGain: null, startAt: 0,
     seekAt: 0,      // 今回の再生を開始した位置（秒）
     playSec: 0,     // 再生ヘッドの現在位置（秒）。停止後もここから再開する
+    follow: true,   // 再生ヘッドに合わせて画面を横スクロールするか（手動スクロールで一時解除）
   },
   phDrag: false,    // 再生ヘッドを掴んでドラッグ中か
   backing: null,        // {peaks, durationSec, offsetSec, gainDb, mute, solo, buffer}
@@ -931,6 +932,7 @@ function zoomBy(factor) {
   if (!state.session) return;
   state.pxPerSec = Math.max(40, Math.min(2000, state.pxPerSec * factor));
   resizeCanvases(); draw();
+  _followScrollLeft = -1;   // 内容幅が変わると scrollLeft も動くので、追従の基準を取り直す
 }
 els.zoomin.addEventListener("click", () => zoomBy(1.4));
 els.zoomout.addEventListener("click", () => zoomBy(1 / 1.4));
@@ -1778,6 +1780,8 @@ els.tostart.addEventListener("click", () => {
   if (state.audio.playing) stopAudio(true);
   state.audio.playSec = 0;
   updatePlayheadStatic();
+  const sc = horizontalScroller();      // 表示も先頭へ戻す（ヘッドを画面外に置き去りにしない）
+  if (sc) sc.scrollLeft = 0;
 });
 
 // --- 再生ヘッド（両レーンを貫く縦線・12.4） ---
@@ -1799,12 +1803,51 @@ function updatePlayheadStatic() {
 function startPlayhead() {
   els.playhead.hidden = false;
   if (state.backing) els.bplayhead.hidden = false;
+  state.audio.follow = true;            // 再生開始のたびに追従を復帰させる
+  _followScrollLeft = -1;
   const tick = () => {
     if (!state.audio.playing) return;
-    positionPlayhead(currentPlaySec());
+    const t = currentPlaySec();
+    positionPlayhead(t);
+    followPlayhead(t);
     _playheadRAF = requestAnimationFrame(tick);
   };
   _playheadRAF = requestAnimationFrame(tick);
+}
+
+// --- 再生ヘッド追従スクロール ---
+// 再生ヘッドが表示領域の左から 60% を超えたら、超えたぶんだけ横スクロールする。
+// 毎フレーム「60% の位置に戻す」ため、スクロール速度は再生ヘッドの速度と自動的に一致し、
+// ヘッドは 60% の線に貼り付いたまま、内容だけが流れていくように見える。
+const FOLLOW_RATIO = 0.6;
+let _followScrollLeft = -1;   // 直近に自分で設定した scrollLeft（手動スクロール検出用）
+
+function followPlayhead(t) {
+  const a = state.audio;
+  if (!a.follow || !state.view) return;
+  const sc = horizontalScroller();
+  const maxScroll = Math.max(0, sc.scrollWidth - sc.clientWidth);
+  if (maxScroll <= 0) return;   // スクロール不要（全体が画面に収まっている）
+  // 前フレームで自分が設定した値から動いていたら、ユーザーが手動スクロールした
+  // ということなので追従を解除する（再生中でも自由に別の場所を見られる）。
+  if (_followScrollLeft >= 0 && Math.abs(sc.scrollLeft - _followScrollLeft) > 1.5) {
+    a.follow = false;
+    setStatus("追従スクロールを解除しました（再生し直すと復帰します）");
+    return;
+  }
+  // 画面上での再生ヘッド位置。grid の rect は scrollLeft を織り込んで動くので、
+  // これがそのまま「いま画面のどこに見えているか」になる。
+  const screenX = els.grid.getBoundingClientRect().left + state.view.timeToX(t);
+  const rect = gridwrap().getBoundingClientRect();
+  const viewLeft = Math.max(rect.left, 0);
+  const viewRight = Math.min(rect.right, window.innerWidth);
+  const target = viewLeft + (viewRight - viewLeft) * FOLLOW_RATIO;
+  // 60% を超えたら追従。左に外れた場合（先頭へ戻した直後など）も 60% へ引き戻す。
+  const delta = screenX - target;
+  if (delta <= 0.5 && screenX >= viewLeft) { _followScrollLeft = sc.scrollLeft; return; }
+  const ns = Math.max(0, Math.min(maxScroll, sc.scrollLeft + delta));
+  if (ns !== sc.scrollLeft) sc.scrollLeft = ns;
+  _followScrollLeft = sc.scrollLeft;   // 読み戻して端数丸めのぶんも吸収する
 }
 function stopPlayhead() {
   cancelAnimationFrame(_playheadRAF);
@@ -1845,4 +1888,4 @@ async function loadFromUrl(url) {
 }
 if (location.hash === "#demo") window.addEventListener("load", () => loadFromUrl("/api/dev/sample"));
 
-window.addEventListener("resize", () => { resizeCanvases(); draw(); });
+window.addEventListener("resize", () => { resizeCanvases(); draw(); _followScrollLeft = -1; });
