@@ -484,6 +484,22 @@ def delete_backing(sid: str):
 # 静的フロントエンド
 # --------------------------------------------------------------------------
 
+@app.middleware("http")
+async def revalidate_frontend(request, call_next):
+    """HTML / CSS / JS は毎回 ETag で検証させる。
+
+    ブラウザが既定のヒューリスティックでキャッシュすると、たとえば index.html だけ
+    古いまま app.js が新しい、という組み合わせが起きうる。3つは一体で動くので、
+    片方だけ古いと画面が真っ白になるなど分かりにくい壊れ方をする。
+    no-cache は「使う前に必ず問い合わせる」であり、中身が変わっていなければ
+    304 が返るだけなので転送量は増えない。
+    """
+    resp = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.get("/")
 def index():
     return FileResponse("static/index.html")

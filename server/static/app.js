@@ -100,10 +100,9 @@ const setStatus = (msg) => { els.status.textContent = msg; };
 
 // 横方向のズーム率。内容幅 = 秒数 × pxPerSec（最低でもビューポート幅を満たす）。
 // これにより長い音声は横スクロールになり、鍵盤列は固定のまま常に見える。
-const MAX_CANVAS_PX = 30000;        // canvas の 1辺の上限（CSS px）
-const MAX_CANVAS_AREA_DEV = 150e6;  // canvas の面積上限（デバイス px²）。これを超えると
-                                    // ブラウザが描画バッファを確保できず真っ白になるため、
-                                    // 縦横を同時に拡大しすぎた場合はここで頭打ちにする。
+// 内容（スクロール範囲）の 1辺の上限。canvas ではなく空の div のサイズなので、
+// 大きくしてもメモリはほぼ食わない（canvas は常に表示領域ぶんだけ確保する）。
+const MAX_CONTENT_PX = 200000;
 
 const gridwrap = () => els.grid.parentElement;
 const keyswrap = () => els.keys.parentElement;
@@ -115,25 +114,56 @@ function layout() {
   const gw = gridwrap();
   const viewH = gw.clientHeight, viewW = gw.clientWidth;
   const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
-  let contentW = Math.min(MAX_CANVAS_PX, Math.max(viewW, dur * state.pxPerSec));
+  const contentW = Math.round(Math.min(MAX_CONTENT_PX, Math.max(viewW, dur * state.pxPerSec)));
 
   const { lo, hi } = viewRange();
   const semis = Math.max(1, (hi - lo) / 100);
   const fitPx = viewH / semis;                       // 全音域が収まる 1半音あたりの高さ
   const per = Math.max(fitPx, state.pxPerSemi || 0); // 収まりきる高さより小さくはしない
-  let contentH = Math.min(MAX_CANVAS_PX, Math.max(viewH, semis * per));
-
-  // 面積の上限を超えたら、まず縦、それでも足りなければ横を詰める
-  // （どちらもビューポート寸法より小さくはしない）。
-  const dpr = window.devicePixelRatio || 1;
-  let area = contentW * contentH * dpr * dpr;
-  if (area > MAX_CANVAS_AREA_DEV) {
-    contentH = Math.max(viewH, contentH * Math.sqrt(MAX_CANVAS_AREA_DEV / area));
-    area = contentW * contentH * dpr * dpr;
-    if (area > MAX_CANVAS_AREA_DEV) contentW = Math.max(viewW, contentW * (MAX_CANVAS_AREA_DEV / area));
-  }
-  contentW = Math.round(contentW); contentH = Math.round(contentH);
+  const contentH = Math.round(Math.min(MAX_CONTENT_PX, Math.max(viewH, semis * per)));
   return { contentW, contentH, viewW, viewH, fitPx, semis, dur };
+}
+
+// スクロール範囲を作る空の div（canvas の代わりに「内容の大きさ」を持つ役）。
+// index.html に無ければ動的に作り、位置指定も JS で入れる。こうしておくと、
+// ブラウザが古い HTML/CSS をキャッシュしていても app.js だけで正しく組み上がる。
+function makeSpacer(id, wrap, canvas) {
+  let el = document.getElementById(id);
+  if (!el) { el = document.createElement("div"); el.id = id; wrap.insertBefore(el, wrap.firstChild); }
+  Object.assign(el.style, { position: "absolute", top: "0", left: "0", pointerEvents: "none" });
+  Object.assign(canvas.style, { position: "absolute", top: "0", left: "0" });
+  return el;
+}
+let _spacersReady = false;
+function ensureSpacers() {
+  if (_spacersReady) return;
+  els.gridspace = makeSpacer("gridspace", gridwrap(), els.grid);
+  els.bspace = makeSpacer("bspace", els.bcanvas.parentElement, els.bcanvas);
+  _spacersReady = true;
+}
+
+// 内容座標（0,0）が画面上のどこに来るかを返す。canvas は表示範囲ぶんしか無く
+// スクロール位置へ transform で貼り付いているので、canvas の rect は使えない。
+function contentOrigin() {
+  const gw = gridwrap(), r = gw.getBoundingClientRect();
+  return { left: r.left - gw.scrollLeft, top: r.top - gw.scrollTop };
+}
+
+// 描画コンテキストを「内容座標で描けば、見えている範囲だけが canvas に出る」状態にする。
+function applyViewTransform(ctx) {
+  const dpr = window.devicePixelRatio || 1, gw = gridwrap();
+  ctx.setTransform(dpr, 0, 0, dpr, -gw.scrollLeft * dpr, -gw.scrollTop * dpr);
+}
+function clearCanvas(cv) {
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  return ctx;
+}
+// いま画面に見えている時間範囲（描画の間引きに使う）。
+function visibleTimeRange(v) {
+  const gw = gridwrap();
+  return { t0: v.xToTime(gw.scrollLeft), t1: v.xToTime(gw.scrollLeft + gw.clientWidth) };
 }
 
 // 音源を読み込んだ直後の初期表示: 縦軸そのものは固定範囲のまま、
@@ -152,13 +182,13 @@ function fitViewToNotes() {
   syncVScroll();
 }
 
-// 縦スクロールに合わせて、スクロールしない要素の位置を合わせ直す。
-//  - 鍵盤列: ラッパは固定のまま canvas を上下にずらす（鍵盤側にスクロールバーを出さない）
+// スクロールに合わせて、canvas と付随要素の位置を合わせ直す。
+//  - グリッド canvas: 表示範囲ぶんしか無いので、スクロール位置へ transform で貼り付ける
 //  - 再生ヘッドのつまみ: 内容の先頭ではなく、常に見えている上端に置く
 function syncVScroll() {
-  const top = gridwrap().scrollTop;
-  els.keys.style.top = (-top) + "px";
-  els.phgrab.style.top = top + "px";
+  const gw = gridwrap();
+  els.grid.style.transform = `translate(${gw.scrollLeft}px, ${gw.scrollTop}px)`;
+  els.phgrab.style.top = gw.scrollTop + "px";
 }
 
 // ==========================================================================
@@ -197,22 +227,27 @@ function makeView(session, width, height) {
 // ==========================================================================
 // 描画
 // ==========================================================================
+// canvas は「見えている範囲ぶん」だけを確保する（内容全体ぶんは確保しない）。
+// スクロール範囲は #gridspace の寸法が作り、canvas は transform で追従する。
+// これにより、どれだけ拡大してもビットマップのメモリは一定に保たれる。
 function resizeCanvases() {
+  ensureSpacers();
   const dpr = window.devicePixelRatio || 1;
-  const { contentW, contentH } = layout();
-  // グリッド: 内容幅 × 内容高ぶんの canvas（ラッパが縦横にスクロールする）
-  els.grid.style.width = contentW + "px";
-  els.grid.style.height = contentH + "px";
-  els.grid.width = Math.round(contentW * dpr);
-  els.grid.height = Math.round(contentH * dpr);
-  els.grid.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
-  // 鍵盤: 固定幅 × 内容高（グリッドと同じ縦スケール）
+  const { contentW, contentH, viewW, viewH } = layout();
+  // スクロール範囲を作る空の div
+  els.gridspace.style.width = contentW + "px";
+  els.gridspace.style.height = contentH + "px";
+  // グリッド: 表示範囲ぶんの canvas
+  els.grid.style.width = viewW + "px";
+  els.grid.style.height = viewH + "px";
+  els.grid.width = Math.round(viewW * dpr);
+  els.grid.height = Math.round(viewH * dpr);
+  // 鍵盤: 固定幅 × 表示高さ（グリッドと同じ縦スケールで、同じ縦オフセットで描く）
   const kw = keyswrap().clientWidth;
-  els.keys.style.height = contentH + "px";
+  els.keys.style.height = viewH + "px";
   els.keys.width = Math.round(kw * dpr);
-  els.keys.height = Math.round(contentH * dpr);
-  els.keys.getContext("2d").setTransform(dpr, 0, 0, dpr, 0, 0);
-  // 再生ヘッドの縦線も内容高いっぱいに伸ばす
+  els.keys.height = Math.round(viewH * dpr);
+  // 再生ヘッドの縦線は内容高いっぱいに伸ばす（内容座標に置かれるため）
   els.playhead.style.height = contentH + "px";
   syncVScroll();
 }
@@ -220,14 +255,15 @@ function resizeCanvases() {
 function draw() {
   if (!state.session) {
     // 空状態（全トラック削除後など）: キャンバスを消す
-    els.grid.getContext("2d").clearRect(0, 0, els.grid.width, els.grid.height);
-    els.keys.getContext("2d").clearRect(0, 0, els.keys.width, els.keys.height);
+    clearCanvas(els.grid); clearCanvas(els.keys);
     updatePlayheadStatic();
     return;
   }
   const { contentW, contentH } = layout();
   state.view = makeView(state.session, contentW, contentH);
-  renderScene(els.grid.getContext("2d"), state.view, null);
+  const ctx = clearCanvas(els.grid);
+  applyViewTransform(ctx);          // 以降は内容座標のまま描ける
+  renderScene(ctx, state.view, null);
   drawKeys();
   syncVScroll();
   if (state.backing) drawBacking();
@@ -250,41 +286,39 @@ function scheduleDraw() {
 }
 
 // --- オフスクリーン背景キャッシュ（ドラッグ中のみ使用） ---
-let _bg = null, _bgCtx = null;
+// 表示 canvas と同じ寸法（＝表示範囲ぶん）。スクロールすると内容がずれるので、
+// そのときは作り直す（_bgScroll でスクロール位置を覚えておく）。
+let _bg = null, _bgCtx = null, _bgScroll = null;
 function ensureBg() {
   if (!_bg) { _bg = document.createElement("canvas"); _bgCtx = _bg.getContext("2d"); }
   if (_bg.width !== els.grid.width || _bg.height !== els.grid.height) {
     _bg.width = els.grid.width; _bg.height = els.grid.height;
   }
-  const dpr = window.devicePixelRatio || 1;
-  _bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  _bgCtx.setTransform(1, 0, 0, 1, 0, 0);
+  _bgCtx.clearRect(0, 0, _bg.width, _bg.height);
+  applyViewTransform(_bgCtx);
   return _bgCtx;
 }
 
 // ドラッグ開始時: liveSegs 以外の全シーンを背景キャッシュに描く。
 function prepareDragBackground(liveSegs) {
+  const gw = gridwrap();
   renderScene(ensureBg(), state.view, liveSegs);
   state.drag.liveSegs = liveSegs;
   state.drag.bgReady = true;
+  _bgScroll = { l: gw.scrollLeft, t: gw.scrollTop };
 }
 
-// ドラッグ中フレーム: 見えている範囲だけ背景を貼り付け → 動かすセグメントを上描き。
-// 更新範囲をビューポート幅に限定するので、音声が長く canvas が横に巨大でも
-// 1フレームの負荷は一定（画面に見えている部分だけ）になる。
+// ドラッグ中フレーム: 背景をそのまま貼り付け → 動かすセグメントだけを上描き。
+// 1フレームの負荷が内容量（音声長・ノート数）に依らず一定になる。
 function drawDragFrame() {
-  const ctx = els.grid.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
   const gw = gridwrap();
-  // 可視範囲（デバイスピクセル）
-  const dx = Math.max(0, Math.floor(gw.scrollLeft * dpr));
-  const dw = Math.min(els.grid.width - dx, Math.ceil(gw.clientWidth * dpr) + 1);
-  const dy = Math.max(0, Math.floor(gw.scrollTop * dpr));
-  const dh = Math.min(els.grid.height - dy, Math.ceil(gw.clientHeight * dpr) + 1);
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(dx, dy, dw, dh);
-  ctx.drawImage(_bg, dx, dy, dw, dh, dx, dy, dw, dh);   // 同じ矩形をコピー
-  ctx.restore();                                        // dpr 変換に戻す
+  // 自動スクロールなどで表示位置が変わっていたら背景を作り直す
+  if (!_bgScroll || _bgScroll.l !== gw.scrollLeft || _bgScroll.t !== gw.scrollTop)
+    prepareDragBackground(state.drag.liveSegs);
+  const ctx = clearCanvas(els.grid);
+  ctx.drawImage(_bg, 0, 0);
+  applyViewTransform(ctx);
   for (const seg of state.drag.liveSegs) {
     const loc = locateSeg(seg);
     if (loc) drawOneSegment(ctx, state.view, loc.note, seg, loc.i);
@@ -311,17 +345,24 @@ function locateSeg(seg) {
 // 全シーン（グリッド + F0曲線 + ノート）を任意の context に描く。
 // skip: 省略するセグメントの Set（ドラッグ中の背景生成で使う）。
 function renderScene(ctx, v, skip) {
-  ctx.clearRect(0, 0, v.width, v.height);
+  // 見えている範囲だけを描く。canvas は表示範囲ぶんしか無く、内容座標へ平行移動して
+  // あるので、範囲外を描いても捨てられるだけ（＝拡大するほど無駄になる）。
+  const vis = visibleTimeRange(v);
+  const x0 = v.timeToX(vis.t0), x1 = v.timeToX(vis.t1);
+  const gw = gridwrap();
+  const cTop = v.yToCents(gw.scrollTop), cBot = v.yToCents(gw.scrollTop + gw.clientHeight);
 
   // 半音行の背景（黒鍵行を薄く）
-  for (let c = v.cLo; c <= v.cHi; c += 100) {
+  const rowLo = Math.max(v.cLo, Math.floor((cBot - 100) / 100) * 100);
+  const rowHi = Math.min(v.cHi, Math.ceil((cTop + 100) / 100) * 100);
+  for (let c = rowLo; c <= rowHi; c += 100) {
     const midi = Math.round(c / 100);
     const y = v.centsToY(c + 50);
     const h = v.rowHeightPx;
     ctx.fillStyle = isBlackKey(midi) ? "#14100b" : "#1a1510";
-    ctx.fillRect(0, y - h / 2, v.width, h);
+    ctx.fillRect(x0, y - h / 2, x1 - x0, h);
     ctx.strokeStyle = "#2a2115";
-    ctx.beginPath(); ctx.moveTo(0, v.centsToY(c)); ctx.lineTo(v.width, v.centsToY(c)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x0, v.centsToY(c)); ctx.lineTo(x1, v.centsToY(c)); ctx.stroke();
   }
 
   // 時間グリッド = BPM と拍子による拍線・小節線。
@@ -332,17 +373,18 @@ function renderScene(ctx, v, skip) {
   const spb = 60 / bpm;                       // 1拍の秒数
   const beatPx = spb * (v.width / (v.t1 || 1));
   const beatStride = beatPx < 6 ? Math.ceil(6 / beatPx) : 1;  // 拍線が詰まりすぎたら間引く
-  let bi = 0;
-  for (let t = 0; t <= v.t1 + 1e-6; t += spb, bi++) {
+  const yTop = gw.scrollTop, yBot = gw.scrollTop + gw.clientHeight;
+  let bi = Math.max(0, Math.floor(vis.t0 / spb));      // 画面に入る最初の拍から
+  for (let t = bi * spb; t <= Math.min(v.t1, vis.t1) + 1e-6; t += spb, bi++) {
     const x = v.timeToX(t);
     const isBar = bi % beats === 0;
     if (!isBar && (bi % beatStride !== 0)) continue;
     ctx.strokeStyle = isBar ? "#4a3f2c" : "#221c13";
     ctx.lineWidth = isBar ? 1.4 : 1;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
-    if (isBar) {                              // 小節番号（1始まり）
+    ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot); ctx.stroke();
+    if (isBar) {                              // 小節番号（1始まり・画面上端に固定）
       ctx.fillStyle = "#8c8172";
-      ctx.fillText(String(bi / beats + 1), x + 3, 11);
+      ctx.fillText(String(bi / beats + 1), x + 3, yTop + 11);
     }
   }
   ctx.lineWidth = 1;
@@ -352,29 +394,34 @@ function renderScene(ctx, v, skip) {
   if (bounds.length) {
     ctx.strokeStyle = "rgba(79,183,176,0.55)"; ctx.setLineDash([6, 4]);
     for (const tb of bounds) {
+      if (tb < vis.t0 || tb > vis.t1) continue;
       const x = v.timeToX(tb);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, v.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot); ctx.stroke();
     }
     ctx.setLineDash([]);
   }
 
-  drawF0Curve(ctx, v);
+  drawF0Curve(ctx, v, vis);
   for (const note of allNotes()) {
     note.segments.forEach((s, i) => {
       if (skip && skip.has(s)) return;
+      if (s.endSec < vis.t0 || s.startSec > vis.t1) return;   // 画面外のバーは描かない
       drawOneSegment(ctx, v, note, s, i);
     });
   }
 }
 
 // 白い F0 曲線（編集オフセットを反映した表示用の近似）
-function drawF0Curve(ctx, v) {
+function drawF0Curve(ctx, v, vis) {
   const s = state.session, f0 = s.f0Hz, hop = s.hopSec;
   const primary = s.notes.filter((n) => !n.voice);   // 曲線は主ボイスのみ反映
   ctx.strokeStyle = "rgba(237,230,216,0.9)"; ctx.lineWidth = 1.3;
   ctx.beginPath();
   let pen = false;
-  for (let i = 0; i < f0.length; i++) {
+  // 画面に入るフレームだけ辿る（拡大時に全長を走査しないため）
+  const iFrom = vis ? Math.max(0, Math.floor(vis.t0 / hop) - 1) : 0;
+  const iTo = vis ? Math.min(f0.length, Math.ceil(vis.t1 / hop) + 2) : f0.length;
+  for (let i = iFrom; i < iTo; i++) {
     const hz = f0[i];
     if (!(hz > 0)) { pen = false; continue; }
     const t = i * hop;
@@ -471,10 +518,16 @@ function drawRmsBg(ctx, v, s, x0, x1, yBot, h, rms, hop) {
 }
 
 function drawKeys() {
-  const v = state.view, ctx = els.keys.getContext("2d");
+  const v = state.view, gw = gridwrap();
+  const ctx = clearCanvas(els.keys);
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, -gw.scrollTop * dpr);   // グリッドと同じ縦位置に揃える
   const w = els.keys.getBoundingClientRect().width;
-  ctx.clearRect(0, 0, w, v.height);
-  for (let c = v.cLo; c <= v.cHi; c += 100) {
+  // 見えている行だけ描く
+  const cTop = v.yToCents(gw.scrollTop), cBot = v.yToCents(gw.scrollTop + gw.clientHeight);
+  const rowLo = Math.max(v.cLo, Math.floor((cBot - 100) / 100) * 100);
+  const rowHi = Math.min(v.cHi, Math.ceil((cTop + 100) / 100) * 100);
+  for (let c = rowLo; c <= rowHi; c += 100) {
     const midi = Math.round(c / 100);
     const y = v.centsToY(c + 50), h = v.rowHeightPx;
     ctx.fillStyle = isBlackKey(midi) ? "#120f0a" : "#ede6d8";
@@ -633,8 +686,8 @@ els.grid.addEventListener("mousedown", (e) => {
   e.preventDefault();                                  // テキスト/画像選択を防ぐ（mouseup 取りこぼし対策）
   // 自動スクロールは state.mouse を基準に動くので、押した時点の位置を必ず入れておく
   state.mouse = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey };
-  const rect = els.grid.getBoundingClientRect();
-  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  const org = contentOrigin();
+  const px = e.clientX - org.left, py = e.clientY - org.top;
   const t = state.view.xToTime(px);
   const hit = hitTest(px, t, state.view.yToCents(py));
 
@@ -725,8 +778,8 @@ function copySelection() {
 // 開始時間は元のまま。音程は **カーソルの縦位置** に合わせて全体を移調する（自由な音程で配置）。
 function pasteClipboard() {
   if (!state.clipboard || !state.clipboard.length || !state.session) return;
-  const rect = els.grid.getBoundingClientRect();
-  const cursorCents = state.view.yToCents(state.mouse.clientY - rect.top);
+  const org = contentOrigin();
+  const cursorCents = state.view.yToCents(state.mouse.clientY - org.top);
   // アンカー = コピー群で最も早いバーの絶対音高。これをカーソル音程へ合わせて移調。
   let anchorCents = 0, anchorStart = Infinity;
   for (const cn of state.clipboard) for (const s of cn.segments) {
@@ -782,7 +835,7 @@ function deleteSelectedHarmony() {
 // マウスの画面座標だけ保持（getBoundingClientRect を毎回呼ぶと強制リフローで重い）。
 // グリッド内 x や時刻は必要になった時だけ計算する。
 function mouseTime() {
-  return state.view.xToTime(state.mouse.clientX - els.grid.getBoundingClientRect().left);
+  return state.view.xToTime(state.mouse.clientX - contentOrigin().left);
 }
 
 window.addEventListener("mousemove", (e) => {
@@ -807,8 +860,8 @@ function applyDragMove(e) {
   const v = state.view;
 
   if (d.mode === "marquee") {
-    const r = els.grid.getBoundingClientRect();
-    d.x1 = e.clientX - r.left; d.y1 = e.clientY - r.top;
+    const org = contentOrigin();
+    d.x1 = e.clientX - org.left; d.y1 = e.clientY - org.top;
     // 端での自動スクロールは autoScrollTick が毎フレーム面倒を見る
   } else if (d.mode === "pitch") {
     updateSnapLabel(e);
@@ -974,8 +1027,7 @@ window.addEventListener("mouseup", endDrag);
 // 分割線ダブルクリック = 結合（F-2）
 els.grid.addEventListener("dblclick", (e) => {
   if (!state.session || state.audio.playing) return;
-  const rect = els.grid.getBoundingClientRect();
-  const px = e.clientX - rect.left, t = state.view.xToTime(px);
+  const px = e.clientX - contentOrigin().left, t = state.view.xToTime(px);
   const hit = hitTest(px, t);
   if (hit && hit.kind === "divider") {
     replaceNote(hit.note, PL.mergeNote(hit.note, hit.bi));
@@ -1317,19 +1369,26 @@ els.bfile.addEventListener("change", async (e) => {
 // 伴奏波形（peaks から描画）。グリッドと同じ時間軸・幅で並べる。
 function drawBacking() {
   if (!state.backing || !state.view) return;
+  ensureSpacers();
   const v = state.view, dpr = window.devicePixelRatio || 1;
-  const cw = v.width, ch = els.bcanvas.parentElement.clientHeight;
-  els.bcanvas.style.width = cw + "px"; els.bcanvas.style.height = ch + "px";
-  els.bcanvas.width = Math.round(cw * dpr); els.bcanvas.height = Math.round(ch * dpr);
+  const wrap = els.bcanvas.parentElement;
+  const ch = wrap.clientHeight, vw = wrap.clientWidth;
+  // グリッドと同じ方式: スクロール範囲は spacer が作り、canvas は見えている幅だけ持つ。
+  els.bspace.style.width = v.width + "px"; els.bspace.style.height = ch + "px";
+  els.bcanvas.style.width = vw + "px"; els.bcanvas.style.height = ch + "px";
+  els.bcanvas.width = Math.round(vw * dpr); els.bcanvas.height = Math.round(ch * dpr);
+  els.bcanvas.style.transform = `translateX(${wrap.scrollLeft}px)`;
   const ctx = els.bcanvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, cw, ch);
+  ctx.setTransform(dpr, 0, 0, dpr, -wrap.scrollLeft * dpr, 0);
+  ctx.clearRect(wrap.scrollLeft, 0, vw, ch);
   const peaks = state.backing.peaks, dur = state.backing.durationSec;
   const mid = ch / 2;
+  const t0 = v.xToTime(wrap.scrollLeft), t1 = v.xToTime(wrap.scrollLeft + vw);
   ctx.strokeStyle = "rgba(200,190,172,0.8)";
   ctx.beginPath();
   for (let i = 0; i < peaks.length; i++) {
     const t = (i / peaks.length) * dur + state.backing.offsetSec;  // 頭合わせを反映
+    if (t < t0 || t > t1) continue;                                // 画面外は描かない
     const x = v.timeToX(t), a = peaks[i] * (mid - 2);
     ctx.moveTo(x, mid - a); ctx.lineTo(x, mid + a);
   }
@@ -1369,11 +1428,13 @@ els.bremove.addEventListener("click", async () => {
 // グリッドのスクロール: 縦は鍵盤列、横は伴奏レーン（時間軸）と同期させる。
 els.grid.parentElement.addEventListener("scroll", () => {
   syncVScroll();
+  scheduleDraw();   // canvas は表示範囲ぶんしか無いので、スクロールしたら描き直す
   if (!state.backing) return;
   els.bcanvas.parentElement.scrollLeft = els.grid.parentElement.scrollLeft;
 });
 els.bcanvas.parentElement.addEventListener("scroll", () => {
   els.grid.parentElement.scrollLeft = els.bcanvas.parentElement.scrollLeft;
+  if (state.backing) drawBacking();
 });
 
 // ==========================================================================
@@ -2035,9 +2096,8 @@ function followPlayhead(t) {
     setStatus("追従スクロールを解除しました（再生し直すと復帰します）");
     return;
   }
-  // 画面上での再生ヘッド位置。grid の rect は scrollLeft を織り込んで動くので、
-  // これがそのまま「いま画面のどこに見えているか」になる。
-  const screenX = els.grid.getBoundingClientRect().left + state.view.timeToX(t);
+  // 画面上での再生ヘッド位置（内容座標の原点 + 時刻→x）。
+  const screenX = contentOrigin().left + state.view.timeToX(t);
   const rect = gridwrap().getBoundingClientRect();
   const viewLeft = Math.max(rect.left, 0);
   const viewRight = Math.min(rect.right, window.innerWidth);
@@ -2057,8 +2117,7 @@ function stopPlayhead() {
 // 再生ヘッドのつまみをドラッグして再生位置を移動（停止中のみ）。
 function playheadDragMove(e) {
   if (!state.phDrag || !state.session) return;
-  const rect = els.grid.getBoundingClientRect();
-  const x = e.clientX - rect.left;
+  const x = e.clientX - contentOrigin().left;
   const t = Math.max(0, Math.min(playDur(), state.view.xToTime(x)));
   state.audio.playSec = t;
   positionPlayhead(t);

@@ -114,7 +114,7 @@
 
   <div id="editor" class="editor">
     <div class="keyswrap"><canvas id="keys"></canvas></div>
-    <div class="gridwrap"><canvas id="grid"></canvas><div id="playhead" class="playhead" hidden><span class="phgrab" title="ドラッグで再生位置を移動"></span></div></div>
+    <div class="gridwrap"><div id="gridspace"></div><canvas id="grid"></canvas><div id="playhead" class="playhead" hidden><span class="phgrab" title="ドラッグで再生位置を移動"></span></div></div>
   </div>
 
   <div id="backinglane" class="backinglane" hidden>
@@ -126,7 +126,7 @@
       <label>頭合わせ <input id="boffset" type="number" step="0.001" value="0" />s</label>
       <button id="bremove" title="伴奏を外す">×</button>
     </div>
-    <div class="bwrap"><canvas id="bcanvas"></canvas><div id="bplayhead" class="playhead" hidden></div></div>
+    <div class="bwrap"><div id="bspace"></div><canvas id="bcanvas"></canvas><div id="bplayhead" class="playhead" hidden></div></div>
   </div>
 
   <script src="/static/pitchlogic.js"></script>

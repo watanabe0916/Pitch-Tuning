@@ -192,12 +192,15 @@ input[type=range]:disabled::-moz-range-thumb { background: var(--ink-faint); bor
    flex 幅計算を乗っ取る問題を回避する。横スクロールしても鍵盤は常に見える。 */
 .keyswrap { flex: 0 0 56px; position: relative; background: var(--bg-1); z-index: 2;
   border-right: 1px solid var(--line); overflow: hidden; }
-/* 鍵盤 canvas は内容高ぶんの高さを持ち、JS が top をずらしてグリッドの縦スクロールに追従する
-   （鍵盤側にスクロールバーを出さないため overflow: hidden + top オフセット方式）。 */
+/* 鍵盤 canvas は表示領域ぶんだけ確保し、描画時に縦スクロール量だけずらして描く。 */
 .keyswrap canvas { position: absolute; top: 0; left: 0; width: 100%; display: block; }
-/* グリッドは縦横スクロール可能なコンテナ。canvas の寸法は JS が内容サイズに設定する。 */
+/* グリッドは縦横スクロール可能なコンテナ。
+   #gridspace が内容サイズ（＝スクロール範囲）を作り、canvas は「見えている範囲ぶん」だけを
+   持って transform でスクロール位置に貼り付く。こうしないと拡大時に canvas が巨大化して
+   数百MB〜GB 級のバッファ確保が走り、操作が固まる。 */
 .gridwrap { flex: 1 1 0; min-width: 0; overflow: auto; background: var(--bg-0); position: relative; }
-#grid { display: block; cursor: crosshair; }
+#gridspace { position: absolute; top: 0; left: 0; width: 1px; height: 1px; pointer-events: none; }
+#grid { position: absolute; top: 0; left: 0; display: block; cursor: crosshair; will-change: transform; }
 #grid.locked { cursor: not-allowed; }
 
 /* 再生ヘッド（両レーンを貫く縦線）。scroll 内容と一緒に動く。
@@ -248,4 +251,6 @@ input[type=range]:disabled::-moz-range-thumb { background: var(--ink-faint); bor
   box-shadow: 0 0 0 2px rgba(79, 183, 176, 0.2); }
 #bremove { padding: 2px 8px; }
 .bwrap { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; position: relative; }
-#bcanvas { display: block; height: 100%; }
+/* グリッドと同じく、スクロール範囲は spacer が作り canvas は表示範囲ぶんだけ持つ。 */
+#bspace { position: absolute; top: 0; left: 0; width: 1px; height: 1px; pointer-events: none; }
+#bcanvas { position: absolute; top: 0; left: 0; display: block; will-change: transform; }
