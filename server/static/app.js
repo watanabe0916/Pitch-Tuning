@@ -631,6 +631,8 @@ els.grid.addEventListener("mousedown", (e) => {
   if (e.button !== 0) return;                          // 左ボタンのみ
   if (!state.session || state.audio.playing) return;   // 再生中は編集ロック(F-7)
   e.preventDefault();                                  // テキスト/画像選択を防ぐ（mouseup 取りこぼし対策）
+  // 自動スクロールは state.mouse を基準に動くので、押した時点の位置を必ず入れておく
+  state.mouse = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey };
   const rect = els.grid.getBoundingClientRect();
   const px = e.clientX - rect.left, py = e.clientY - rect.top;
   const t = state.view.xToTime(px);
@@ -641,7 +643,7 @@ els.grid.addEventListener("mousedown", (e) => {
     state.drag = { mode: "marquee", x0: px, y0: py, x1: px, y1: py, moved: false };
     if (!(e.shiftKey)) setSelection([]);      // Shift でなければ選択を一旦クリア
     prepareDragBackground(new Set());          // シーン全体を背景キャッシュ
-    startMarqueeAutoScroll();                  // 端での自動横スクロールを開始
+    startAutoScroll();                         // 端での自動スクロール（縦横）を開始
     return;
   }
 
@@ -692,6 +694,7 @@ els.grid.addEventListener("mousedown", (e) => {
   updateSnapLabel(e);
   draw();
   prepareDragBackground(new Set(live));
+  startAutoScroll();   // 端に寄せたら自動スクロール（音程=縦 / 分割線=横）
 });
 
 function setSelection(arr) {
@@ -783,19 +786,30 @@ function mouseTime() {
 }
 
 window.addEventListener("mousemove", (e) => {
-  state.mouse = { clientX: e.clientX, clientY: e.clientY };
+  // 修飾キーも一緒に覚えておく（自動スクロール中はイベントが来ないため、
+  // 最後のポインタ状態を使って同じドラッグ処理を回し続ける）。
+  state.mouse = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey };
   const d = state.drag;
   if (!d) return;
   // ボタンが離れているのにドラッグが残っている場合は終了（mouseup 取りこぼし対策）。
   // これで「クリックしていないのにノートが動き続ける」不具合を防ぐ。
   if (e.buttons === 0) { endDrag(); return; }
+  applyDragMove(state.mouse);
+  scheduleDraw();   // rAF で間引いて再描画（他タブが重くならないように）
+});
+
+// ドラッグ1フレーム分の適用。マウス移動と自動スクロールの両方から呼ぶ純粋な更新処理。
+// e は {clientX, clientY, shiftKey, altKey} を持つオブジェクト（実イベントでも可）。
+function applyDragMove(e) {
+  const d = state.drag;
+  if (!d) return;
   d.moved = true;
   const v = state.view;
 
   if (d.mode === "marquee") {
     const r = els.grid.getBoundingClientRect();
     d.x1 = e.clientX - r.left; d.y1 = e.clientY - r.top;
-    // 端での自動スクロールは marqueeAutoScrollTick が毎フレーム面倒を見る
+    // 端での自動スクロールは autoScrollTick が毎フレーム面倒を見る
   } else if (d.mode === "pitch") {
     updateSnapLabel(e);
     // 主バーのスナップ済み差分を全選択バーに適用（相対移動）。
@@ -828,8 +842,7 @@ window.addEventListener("mousemove", (e) => {
     let ms = d.startTrans + (e.clientX - d.startX) * msPerPx * 2;
     d.seg.transitionInMs = Math.max(5, Math.min(300, ms));
   }
-  scheduleDraw();   // rAF で間引いて再描画（他タブが重くならないように）
-});
+}
 
 // 実際に横スクロールしている要素を特定する。.gridwrap とは限らず、
 // レイアウト次第でウィンドウ(documentElement)や別の祖先がスクローラになりうるため、
@@ -846,52 +859,101 @@ function horizontalScroller() {
   return gridwrap();   // フォールバック（スクロール不能でも害はない）
 }
 
-// 範囲選択中、ポインタがビューポート左右端に来たら自動で横スクロールし、
-// 画面外の内容まで選択範囲を伸ばせるようにする。マーキー開始時にループを起動し、
-// 終了まで毎フレーム現在のマウス位置を見て回し続ける（マウスを端で止めても効く）。
-let _marqueeScrollRAF = 0;
-function startMarqueeAutoScroll() {
-  if (!_marqueeScrollRAF) _marqueeScrollRAF = requestAnimationFrame(marqueeAutoScrollTick);
+// ドラッグ中、ポインタが表示領域の端（や外）に来たら自動でスクロールし、
+// 画面に見えていない場所まで操作を続けられるようにする。
+// ドラッグ開始時にループを起動し、終了まで毎フレーム現在のマウス位置を見て回し続ける
+// （マウスを端で止めていても、画面外に出したままでも動き続ける）。
+//
+// モードごとに動かす軸を変える:
+//   marquee   … 縦横（選択範囲を画面外まで伸ばす）
+//   pitch     … 縦（音程バーを画面外まで動かす）
+//   divider / transition … 横（時間軸の操作）
+//   gain      … なし（縦位置と音量は無関係なのでスクロールしても意味がない）
+const AUTOSCROLL_AXES = { marquee: "xy", pitch: "y", divider: "x", transition: "x" };
+const AS_EDGE = 48;        // 端から何 px を加速帯とみなすか
+const AS_BASE_V = 26;      // 通常時の最大速度（px/frame）
+const AS_HOLD_MS = 1000;   // 画面外にこれだけ留まったら加速を始める
+const AS_MAX_BOOST = 4;    // 加速の上限倍率
+
+let _autoScrollRAF = 0, _outsideSince = 0;
+function startAutoScroll() {
+  _outsideSince = 0;
+  if (!_autoScrollRAF) _autoScrollRAF = requestAnimationFrame(autoScrollTick);
 }
-function marqueeAutoScrollTick() {
-  _marqueeScrollRAF = 0;
+function stopAutoScroll() {
+  if (_autoScrollRAF) cancelAnimationFrame(_autoScrollRAF);
+  _autoScrollRAF = 0; _outsideSince = 0;
+}
+
+// 端からの食い込み量に比例した速度を返す（端の外ではさらに大きくなる）。
+function edgeVelocity(p, lo, hi) {
+  if (p < lo + AS_EDGE) return -Math.min(AS_EDGE * 2, lo + AS_EDGE - p) / AS_EDGE * AS_BASE_V;
+  if (p > hi - AS_EDGE) return Math.min(AS_EDGE * 2, p - (hi - AS_EDGE)) / AS_EDGE * AS_BASE_V;
+  return 0;
+}
+
+function autoScrollTick() {
+  _autoScrollRAF = 0;
   const d = state.drag;
-  if (!d || d.mode !== "marquee") return;   // ドラッグ終了で自然に停止
+  const ph = !d && state.phDrag;                    // 再生ヘッドのつまみをドラッグ中（横のみ）
+  if (!d && !ph) return;                            // ドラッグ終了で自然に停止
+  const axes = ph ? "x" : (AUTOSCROLL_AXES[d.mode] || "");
+  if (!axes) return;
   // 端の判定は「実際に画面に見えている編集領域」で行う。
-  // gridwrap の rect.right がレイアウト都合で画面外に出ていても、
-  // window.innerWidth でクランプすれば見えている右端で判定できる。
-  const rect = gridwrap().getBoundingClientRect();
-  const viewLeft = Math.max(rect.left, 0);
-  const viewRight = Math.min(rect.right, window.innerWidth);
-  const EDGE = 48, MAXV = 26;   // 端から EDGE px を加速帯、最大 MAXV px/frame
-  const x = state.mouse.clientX;
-  let v = 0;
-  if (x < viewLeft + EDGE) v = -Math.min(EDGE, viewLeft + EDGE - x) / EDGE * MAXV;
-  else if (x > viewRight - EDGE) v = Math.min(EDGE, x - (viewRight - EDGE)) / EDGE * MAXV;
-  if (v !== 0) {
-    const sc = horizontalScroller();   // 実際にスクロールする要素へ適用
+  // gridwrap の rect がレイアウト都合で画面外に出ていても、
+  // window の寸法でクランプすれば見えている端で判定できる。
+  const gw = gridwrap();
+  const rect = gw.getBoundingClientRect();
+  const viewLeft = Math.max(rect.left, 0), viewRight = Math.min(rect.right, window.innerWidth);
+  const viewTop = Math.max(rect.top, 0), viewBottom = Math.min(rect.bottom, window.innerHeight);
+  const x = state.mouse.clientX, y = state.mouse.clientY;
+
+  // 表示領域の外に出てから AS_HOLD_MS を超えたら、そこから 1 秒かけて最大 AS_MAX_BOOST 倍まで加速。
+  const outside = x < viewLeft || x > viewRight || y < viewTop || y > viewBottom;
+  const now = performance.now();
+  if (!outside) _outsideSince = 0;
+  else if (!_outsideSince) _outsideSince = now;
+  let boost = 1;
+  if (_outsideSince) {
+    const held = now - _outsideSince;
+    if (held > AS_HOLD_MS)
+      boost = 1 + Math.min(1, (held - AS_HOLD_MS) / 1000) * (AS_MAX_BOOST - 1);
+  }
+
+  const vx = axes.includes("x") ? edgeVelocity(x, viewLeft, viewRight) * boost : 0;
+  const vy = axes.includes("y") ? edgeVelocity(y, viewTop, viewBottom) * boost : 0;
+  let moved = false;
+
+  if (vx !== 0) {
+    const sc = horizontalScroller();   // 実際に横スクロールする要素へ適用
     const maxScroll = Math.max(0, sc.scrollWidth - sc.clientWidth);
-    const ns = Math.max(0, Math.min(maxScroll, sc.scrollLeft + v));
-    if (ns !== sc.scrollLeft) {
-      sc.scrollLeft = ns;
-      // スクロールで grid の位置がずれるので、静止したマウスでも矩形端が内容側へ伸びる
-      const r = els.grid.getBoundingClientRect();
-      d.x1 = state.mouse.clientX - r.left;
-      d.y1 = state.mouse.clientY - r.top;
-      scheduleDraw();
+    const ns = Math.max(0, Math.min(maxScroll, sc.scrollLeft + vx));
+    if (ns !== sc.scrollLeft) { sc.scrollLeft = ns; moved = true; }
+  }
+  if (vy !== 0) {
+    const maxScroll = Math.max(0, gw.scrollHeight - gw.clientHeight);
+    const ns = Math.max(0, Math.min(maxScroll, gw.scrollTop + vy));
+    if (ns !== gw.scrollTop) {
+      // 画面が動いたぶんドラッグの基準点もずらす。こうするとマウスを止めていても
+      // スクロールに追従してバーが動き続ける（＝画面外へはみ出さずに大きく動かせる）。
+      if (d.startY != null) d.startY -= ns - gw.scrollTop;
+      gw.scrollTop = ns; moved = true;
     }
   }
-  _marqueeScrollRAF = requestAnimationFrame(marqueeAutoScrollTick);   // ドラッグ中は回し続ける
-}
-function stopMarqueeAutoScroll() {
-  if (_marqueeScrollRAF) { cancelAnimationFrame(_marqueeScrollRAF); _marqueeScrollRAF = 0; }
+  // スクロールで内容が動いた ＝ ポインタの下の座標が変わったので、同じ処理をもう一度流す。
+  if (moved) {
+    if (ph) playheadDragMove(state.mouse);
+    else { applyDragMove(state.mouse); scheduleDraw(); }
+  }
+
+  _autoScrollRAF = requestAnimationFrame(autoScrollTick);   // ドラッグ中は回し続ける
 }
 
 function endDrag() {
   const d = state.drag;
   if (!d) return;
   state.drag = null;
-  stopMarqueeAutoScroll();
+  stopAutoScroll();
   if (d.mode === "marquee") {
     const v = state.view;
     if (d.moved) {
@@ -2004,6 +2066,7 @@ function playheadDragMove(e) {
 }
 function playheadDragEnd() {
   state.phDrag = false;
+  stopAutoScroll();
   window.removeEventListener("mousemove", playheadDragMove);
   window.removeEventListener("mouseup", playheadDragEnd);
 }
@@ -2011,6 +2074,8 @@ els.phgrab.addEventListener("mousedown", (e) => {
   if (!state.session || state.audio.playing) return;   // 再生中は移動不可
   e.preventDefault(); e.stopPropagation();
   state.phDrag = true;
+  state.mouse = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey, altKey: e.altKey };
+  startAutoScroll();   // 画面端まで持っていったら自動で横スクロールする
   window.addEventListener("mousemove", playheadDragMove);
   window.addEventListener("mouseup", playheadDragEnd);
 });
