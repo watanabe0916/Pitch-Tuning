@@ -21,6 +21,7 @@ const state = {
   marquee: null,        // 範囲選択の矩形 {x0,y0,x1,y1}
   master: 0.0,          // masterGainDb
   reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
+  delay: { timeMs: 28, feedback: 0.3, mix: 0.0 },   // 出力段ディレイ（mix=0 で off）
   pxPerSec: 260,        // 横ズーム率
   pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
@@ -84,6 +85,11 @@ const els = {
   meterlabel: document.getElementById("meterlabel"),
   reverb: document.getElementById("reverb"),
   reverbval: document.getElementById("reverbval"),
+  delaytime: document.getElementById("delaytime"),
+  delayfb: document.getElementById("delayfb"),
+  delayfbval: document.getElementById("delayfbval"),
+  delaymix: document.getElementById("delaymix"),
+  delaymixval: document.getElementById("delaymixval"),
   undo: document.getElementById("undo"),
   redo: document.getElementById("redo"),
   hzoomin: document.getElementById("hzoomin"),
@@ -617,7 +623,7 @@ function snapshotState() {
     // トラック削除・昇格・全削除（空状態）も巻き戻せるように主 sid を記録
     mainSid: state.session ? state.session.sessionId : null,
     notes: state.session ? state.session.notes : [],
-    master: state.master, reverb: state.reverb,
+    master: state.master, reverb: state.reverb, delay: state.delay,
     dubs: state.dubs.map((d) => ({ sessionId: d.sessionId, notes: d.notes })),
   });
 }
@@ -652,6 +658,7 @@ function applySnapshot(snap) {
   }
   state.master = o.master;
   state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
+  state.delay = o.delay || { timeMs: 28, feedback: 0.3, mix: 0 };
   // 追加トラックの復元: スナップショットの一覧に合わせて再構成する。
   // 現存すればノートだけ差し替え、削除済みならレジストリから復活（バッファは dirty で再レンダ）。
   const newDubs = [];
@@ -670,6 +677,7 @@ function applySnapshot(snap) {
   // UI 同期
   els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
   els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
+  syncDelayUI();
   syncSliders();
   state.dirty = true;
   draw();
@@ -1132,6 +1140,37 @@ els.reverb.addEventListener("input", () => {
 });
 els.reverb.addEventListener("change", () => commitEdit(true));
 
+// --- ディレイ（間隔 ms / 音量）---------------------------------------------
+// 保存済みプロジェクトの旧形式（level = センド量）も読めるようにする。
+function normalizeDelay(d) {
+  const o = Object.assign({ timeMs: 28, feedback: 0.3, mix: 0 }, d || {});
+  if (o.mix == null && d && d.level != null) o.mix = d.level;
+  return { timeMs: +o.timeMs, feedback: +o.feedback, mix: +o.mix };
+}
+function syncDelayUI() {
+  els.delaytime.value = Math.round(state.delay.timeMs);
+  els.delayfb.value = state.delay.feedback;
+  els.delayfbval.textContent = Math.round(state.delay.feedback * 100) + "%";
+  els.delaymix.value = state.delay.mix;
+  els.delaymixval.textContent = Math.round(state.delay.mix * 100) + "%";
+}
+els.delaymix.addEventListener("input", () => {
+  state.delay.mix = parseFloat(els.delaymix.value);
+  els.delaymixval.textContent = Math.round(state.delay.mix * 100) + "%";
+});
+els.delaymix.addEventListener("change", () => commitEdit(true));
+els.delayfb.addEventListener("input", () => {
+  state.delay.feedback = parseFloat(els.delayfb.value);
+  els.delayfbval.textContent = Math.round(state.delay.feedback * 100) + "%";
+});
+els.delayfb.addEventListener("change", () => { if (state.delay.mix > 0) commitEdit(true); });
+els.delaytime.addEventListener("change", () => {
+  const v = parseFloat(els.delaytime.value);
+  state.delay.timeMs = Math.max(1, Math.min(2000, isFinite(v) ? v : 28));
+  syncDelayUI();
+  if (state.delay.mix > 0) commitEdit(true);
+});
+
 // --- アンドゥ/リドゥ・ズーム・プロジェクト保存/読込 ---
 els.undo.addEventListener("click", undo);
 els.redo.addEventListener("click", redo);
@@ -1274,8 +1313,10 @@ els.projfile.addEventListener("change", async (e) => {
     state.session.notes = es.notes || state.session.notes;
     state.master = es.masterGainDb || 0;
     state.reverb = es.reverb || { mix: 0, decaySec: 1.2 };
+    state.delay = normalizeDelay(es.delay);
     els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
     els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
+    syncDelayUI();
     setSelection([]); state.clipboard = null;
     initUndo(); draw(); state.dirty = true; renderAndLoad(false);
     setStatus("プロジェクトを読み込みました");
@@ -1371,6 +1412,7 @@ function buildEditState() {
   const harms = Object.values(voices);
   if (harms.length) es.harmonies = harms.map((notes) => ({ notes }));
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
+  if (state.delay.mix > 0) es.delay = { ...state.delay };
   if (state.backing) es.backing = {
     offsetSec: state.backing.offsetSec, gainDb: state.backing.gainDb,
     mute: state.backing.mute, solo: state.backing.solo,
@@ -1707,6 +1749,7 @@ async function stopRecording() {
 function buildDubEditState(d) {
   const es = { notes: d.notes, masterGainDb: state.master };
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
+  if (state.delay.mix > 0) es.delay = { ...state.delay };
   return es;
 }
 

@@ -29,7 +29,7 @@ from pitch.analysis import analyze, Analysis
 from pitch.segmentation import segment_notes
 from pitch.phrases import detect_phrases
 from pitch.render import render_output, mix_vocal_backing, \
-    true_peak_limit, normalize_true_peak, apply_reverb, \
+    true_peak_limit, normalize_true_peak, apply_reverb, apply_delay, \
     render_f0, synthesize, render_gain
 from pitch.schema import (notes_to_json, notes_from_json, f32_to_b64,
                           note_to_dict, note_from_dict, segment_from_dict)
@@ -299,7 +299,9 @@ def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
     out = np.zeros(total, dtype=np.float64)
     for s, y in parts:
         out[s:s + len(y)] += y                        # 元の位置へ加算配置
-    out = apply_reverb(out, sess.sample_rate, es.get("reverb"))   # リバーブ（全ミックス後）
+    # 空間系は全ボイス合算後に一括適用。ディレイ→リバーブの順（繰り返しにも残響が乗る）。
+    out = apply_delay(out, sess.sample_rate, es.get("delay"))
+    out = apply_reverb(out, sess.sample_rate, es.get("reverb"))
     out *= 10.0 ** (master / 20.0)                    # マスターゲイン
     return out
 

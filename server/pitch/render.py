@@ -400,6 +400,112 @@ def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
     return ir
 
 
+DELAY_FEEDBACK = 0.34         # 繰り返しの減衰。1回ごとにこの比率で小さくなる
+DELAY_DAMP_HZ = 5200.0        # 繰り返すたびに高域を丸める（テープ／アナログ的な自然さ）
+DELAY_LEVEL_AT_FULL = 0.7     # level=1.0 のときの 1発目の音量
+
+# 遅延時間の揺らぎ。短い遅延ほど強く効かせる。
+# 短い固定遅延を原音に足すと周波数軸に等間隔の谷（コムフィルタ）ができて金属的に色付く。
+# 谷の位置を動かして散らすのが目的なので、色付きが問題になる短い側でだけ必要になる。
+# 効きは時間に対して**連続的に**変える（どこかに切り替え点があると、
+# 1ms 動かしただけで音が変わる箇所ができてしまう）。
+DELAY_MOD_FULL_MS = 40.0      # これ以下では揺らぎ最大
+DELAY_MOD_NONE_MS = 120.0     # これ以上では揺らぎなし
+DELAY_MOD_DEPTH_MS = 1.6      # 揺らし幅（±ms）
+DELAY_MOD_RATES_HZ = (0.47, 0.31)   # 揺らぎの速さ（無関係な2つを重ねて周期感を消す）
+
+
+def _delay_tap(x: np.ndarray, sample_rate: int, delay_samples: float,
+               depth_samples: float = 0.0) -> np.ndarray:
+    """遅延を1つ取り出す。depth>0 なら遅延時間をゆっくり揺らす（小数遅延・線形補間）。
+
+    短い固定遅延を原音に足すと、周波数軸に等間隔の谷ができる（コムフィルタ）。
+    それが「金属的」「電話みたい」という色付きの正体なので、
+    遅延時間をわずかに揺らして谷の位置を動かし、色付きを散らす。
+    実機のダブラー／コーラスと同じ考え方。
+    """
+    n = len(x)
+    idx = np.arange(n, dtype=np.float64) - delay_samples
+    if depth_samples > 0:
+        t = np.arange(n) / sample_rate
+        mod = (0.6 * np.sin(2 * np.pi * DELAY_MOD_RATES_HZ[0] * t)
+               + 0.4 * np.sin(2 * np.pi * DELAY_MOD_RATES_HZ[1] * t + 1.1))
+        idx -= depth_samples * mod
+    i0 = np.floor(idx).astype(np.int64)
+    frac = idx - i0
+    out = np.zeros(n, dtype=np.float64)
+    ok = (i0 >= 0) & (i0 + 1 < n)
+    out[ok] = x[i0[ok]] * (1.0 - frac[ok]) + x[i0[ok] + 1] * frac[ok]
+    return out
+
+
+DELAY_MAX_TAIL_SEC = 8.0      # 繰り返しの尾の上限（長い間隔 × 強い FB での暴走を防ぐ）
+
+
+def apply_delay(x: np.ndarray, sample_rate: int, delay: dict) -> np.ndarray:
+    """ディレイ。パラメータは Time / Feedback / Mix の3つ。
+
+    - **timeMs**   : 音が返ってくるまでの時間。
+    - **feedback** : 繰り返しの減衰。0 = 1回だけ、大きいほど長く尾を引く。
+    - **mix**      : 原音とディレイ音のバランス。0 = 原音のみ、1 = ディレイ音のみ。
+                     等power（dry=cos, wet=sin）で混ぜるので、動かしても
+                     全体の音量感が痩せない。
+
+    短い遅延ほど、遅延時間をごくゆっくり揺らして重ねる（コムフィルタによる金属的な
+    色付きを散らすため。実機のダブラーと同じ考え方）。効きは 40ms 以下で最大、
+    120ms 以上でゼロへ **連続的に** 変化するので、どこにも音が急変する境目は無い。
+
+    mix=0 のときは入力をそのまま返す（恒等性を保つ）。尾が切れないよう出力長は伸びる。
+    """
+    if not delay:
+        return x
+    # mix 未指定なら旧キー level を見る（保存済みプロジェクトとの互換）
+    mix = delay.get("mix", delay.get("level", 0.0))
+    mix = max(0.0, min(1.0, float(mix)))
+    if mix <= 0.0:
+        return x
+    time_ms = float(delay.get("timeMs", 350.0))
+    d = int(round(time_ms / 1000.0 * sample_rate))
+    if d <= 0:
+        return x
+    fb = max(0.0, min(0.9, float(delay.get("feedback", DELAY_FEEDBACK))))
+
+    # 繰り返し回数: 音量が -60dB を下回るまで。尾が長くなりすぎないよう上限も掛ける。
+    if fb <= 1e-6:
+        n_rep = 1
+    else:
+        n_rep = int(max(1, np.ceil(np.log(1e-3) / np.log(fb))))
+    n_rep = int(min(n_rep, 40, max(1, DELAY_MAX_TAIL_SEC * sample_rate / d)))
+
+    # 揺らぎの強さ（1=最大, 0=なし）を時間から連続的に決める。smoothstep なので
+    # 変化率も両端で 0 になり、つまみを回したときに効きが折れない。
+    u = (DELAY_MOD_NONE_MS - time_ms) / (DELAY_MOD_NONE_MS - DELAY_MOD_FULL_MS)
+    u = max(0.0, min(1.0, u))
+    w = u * u * (3.0 - 2.0 * u)
+    depth = DELAY_MOD_DEPTH_MS / 1000.0 * sample_rate * w
+    # 高域の丸め方も同様に連続で。短い遅延は原音と融合させたいので削りは控えめ。
+    damp_hz = DELAY_DAMP_HZ + (9000.0 - DELAY_DAMP_HZ) * w
+
+    # 尾のぶんまで含めた長さで計算する（1段ずつ遅らせていくため）
+    n_out = len(x) + d * n_rep
+    xp = np.zeros(n_out, dtype=np.float64)
+    xp[: len(x)] = x
+
+    wet = np.zeros(n_out, dtype=np.float64)
+    sig = xp
+    amp = 1.0
+    for _ in range(n_rep):
+        sig = _delay_tap(sig, sample_rate, d, depth)   # 1段ぶん遅らせる（揺らぎも段ごと）
+        sig = _butter(sig, sample_rate, "low", min(damp_hz, sample_rate * 0.45))
+        wet += amp * sig
+        amp *= fb
+
+    # 等power の dry/wet バランス
+    dry_g = np.cos(mix * np.pi / 2.0)
+    wet_g = np.sin(mix * np.pi / 2.0)
+    return dry_g * xp + wet_g * wet
+
+
 def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
     """畳み込みリバーブ。mix は「送り量」として扱う。残響の尾は出力長に含める。
 
@@ -448,10 +554,11 @@ def render_gate_envelope(analysis: Analysis, notes, num_samples: int,
 
 
 def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0,
-                  reverb: dict = None, gate: bool = False) -> np.ndarray:
+                  reverb: dict = None, gate: bool = False,
+                  delay: dict = None) -> np.ndarray:
     """編集後のボーカル波形を生成する（信号チェーン 4.2、リミッター前まで）。
 
-    renderF0 → synthesize → renderGain（★リバーブ前段）→ [gate] → リバーブ → マスターゲイン。
+    renderF0 → synthesize → renderGain（★空間系の前段）→ [gate] → ディレイ → リバーブ → マスターゲイン。
     セグメントゲインは必ずリバーブより前（AC-10）。マスターゲインはリバーブより後（4.2）。
     gate=True: セグメント区間外を無音化する（ハモリ等の副ボイス用）。
     """
@@ -461,8 +568,9 @@ def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0,
     y = y * gain_lin                              # セグメントゲイン（★リバーブ前）
     if gate:
         y = y * render_gate_envelope(analysis, notes, len(y))   # 区間外を無音化
+    y = apply_delay(y, analysis.sample_rate, delay)     # ディレイ（リバーブの前）
     y = apply_reverb(y, analysis.sample_rate, reverb)   # リバーブ
-    y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン（リバーブ後）
+    y = y * (10.0 ** (master_gain_db / 20.0))     # マスターゲイン（空間系の後）
     return y
 
 

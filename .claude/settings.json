@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -)",
+      "Bash(node --check static/app.js)",
+      "Bash(node tests/test_pitchlogic.js)",
+      "Bash(../.venv/bin/python -m pytest tests/ -q)"
+    ]
+  }
+}
