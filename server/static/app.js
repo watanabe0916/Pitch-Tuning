@@ -314,8 +314,14 @@ function prepareDragBackground(liveSegs) {
 function drawDragFrame() {
   const gw = gridwrap();
   // 自動スクロールなどで表示位置が変わっていたら背景を作り直す
-  if (!_bgScroll || _bgScroll.l !== gw.scrollLeft || _bgScroll.t !== gw.scrollTop)
+  const vMoved = !_bgScroll || _bgScroll.t !== gw.scrollTop;
+  if (vMoved || _bgScroll.l !== gw.scrollLeft) {
     prepareDragBackground(state.drag.liveSegs);
+    // 縦に動いたときは鍵盤列も同じ位置へ描き直す。
+    // ここを忘れると、ドラッグ中の自動スクロール中だけ左の音階表示が止まって見え、
+    // ドラッグを離した瞬間にまとめてずれる（＝グリッドと音階がずれて見える）。
+    if (vMoved) drawKeys();
+  }
   const ctx = clearCanvas(els.grid);
   ctx.drawImage(_bg, 0, 0);
   applyViewTransform(ctx);
