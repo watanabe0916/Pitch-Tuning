@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pyworld as pw
@@ -312,26 +313,100 @@ def synthesize(analysis: Analysis, out_f0: np.ndarray) -> np.ndarray:
     return np.asarray(y, dtype=np.float64)
 
 
-def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
-                   predelay_sec: float = 0.0) -> np.ndarray:
-    """指数減衰ノイズによる合成インパルス応答（アルゴリズミック・リバーブ相当）。
+def _butter(x: np.ndarray, sample_rate: int, kind: str, cutoff, order: int = 2) -> np.ndarray:
+    """バターワースフィルタ（IR の整形用）。位相は問わないので sosfilt で十分。"""
+    from scipy.signal import butter, sosfilt
+    nyq = sample_rate * 0.5
+    if kind in ("low", "high"):
+        if cutoff <= 0 or cutoff >= nyq:
+            return x
+    sos = butter(order, cutoff, btype=kind, fs=sample_rate, output="sos")
+    return sosfilt(sos, x)
 
-    decay_sec 後に -60dB へ落ちる。畳み込みで残響を付ける（14章 Freeverb 相当の代替）。
-    決定的にするため固定シードを使う（プレビューと書き出しで同一結果）。
+
+# 残響の既定パラメータ。声に対して「籠らない」ことを最優先に選んである。
+REVERB_PREDELAY_SEC = 0.022   # 直接音と残響を聴感上分離する（22ms ≒ 7m 先の壁）
+REVERB_HPF_HZ = 190.0         # 残響側の低域を落とす。ここを残すと確実に濁る
+REVERB_LPF_HZ = 7500.0        # 空気吸収に相当。高すぎる残響は不自然にシャリつく
+REVERB_DAMPING = 0.6          # 高域ほど速く減衰させる度合い（0=減衰差なし, 1=最大）
+REVERB_WET_AT_FULL = 0.6      # mix=1.0 のときの wet ゲイン（送り量）
+
+
+@lru_cache(maxsize=8)
+def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
+                   predelay_sec: float = REVERB_PREDELAY_SEC,
+                   damping: float = REVERB_DAMPING) -> np.ndarray:
+    """合成インパルス応答（アルゴリズミック・リバーブ相当）。
+
+    単純な「指数減衰させた白色雑音」は、密度は出るが**部屋には聴こえない**。
+    直接音と同時に全帯域の残響が立ち上がるため、声が箱に入ったように籠る。
+    実際の部屋の応答に近づけるため、次の4点を入れている。
+
+    1. **プリディレイ**: 直接音のあとに残響が来る。これがないと直接音と混ざり、
+       輪郭が溶けて籠って聴こえる。
+    2. **初期反射**: 拡散した尾の前に、まばらな反射音を数個置く。部屋の広さの手がかり。
+    3. **周波数別の減衰**: 高域ほど速く減衰させる（壁と空気による吸収）。
+       全帯域が同じ長さで残ると金属的・人工的になる。
+    4. **低域を落とす**: 声の基音帯（〜200Hz）に長い残響が付くと確実に濁る。
+       残響側だけハイパスするのは、ボーカルのミックスでは定石。
+
+    決定的にするため固定シードを使う（プレビューと書き出しで同一結果・AC-16）。
     """
-    n = max(1, int(decay_sec * sample_rate))
-    t = np.arange(n) / sample_rate
-    rng = np.random.default_rng(1234)                # 決定的
-    ir = rng.standard_normal(n) * np.exp(-6.9077 * t / decay_sec)   # -60dB@decay
-    pre = max(0, int(predelay_sec * sample_rate))
+    sr = sample_rate
+    decay_sec = max(0.05, float(decay_sec))
+    # -60dB で切ると尾の末端が段差になるので、1.4倍まで伸ばして自然に消しきる
+    n = max(2, int(decay_sec * 1.4 * sr))
+    t = np.arange(n) / sr
+    rng = np.random.default_rng(1234)                 # 決定的
+    noise = rng.standard_normal(n)
+
+    # --- 3帯域に分け、高域ほど短い減衰を与える ---
+    d = max(0.0, min(1.0, float(damping)))
+    low = _butter(noise, sr, "low", 500.0)
+    high = _butter(noise, sr, "high", 3500.0)
+    mid = noise - low - high                          # 残り = 中域
+    # 低域は中域よりやや短く（ベースレシオ<1）。実際のホールは低域が長く残るが、
+    # 声に付けると濁るだけなので、板リバーブ同様に低域を抑えた配分にする。
+    env = lambda k: np.exp(-6.9077 * t / (decay_sec * k))   # -60dB @ decay*k
+    tail = (low * env(0.75)
+            + mid * env(1.0 - 0.30 * d)
+            + high * env(1.0 - 0.72 * d))
+
+    # --- 立ち上がり: 密度が徐々に上がるように 12ms かけてフェードイン ---
+    ramp = np.clip(t / 0.012, 0.0, 1.0)
+    tail *= ramp
+
+    # --- 初期反射: 拡散音の前に置くまばらなタップ ---
+    er = np.zeros(n)
+    er_rng = np.random.default_rng(4321)
+    for k in range(9):
+        # 6ms〜48ms に不等間隔（等間隔だと櫛形になって色付く）で配置
+        delay = 0.006 + 0.042 * (k / 8.0) ** 1.25 + float(er_rng.uniform(-0.002, 0.002))
+        i = int(delay * sr)
+        if 0 <= i < n:
+            er[i] += (0.62 ** k) * (1.0 if k % 2 == 0 else -1.0)
+    er = _butter(er, sr, "low", 4000.0)               # 反射面の吸収で高域は丸まる
+
+    ir = er * 0.6 + tail
+    # --- 帯域整形: 低域を落として濁りを断ち、超高域も少し落とす ---
+    ir = _butter(ir, sr, "high", REVERB_HPF_HZ, order=4)   # 急峻に切る（12dB/oct では残る）
+    ir = _butter(ir, sr, "low", min(REVERB_LPF_HZ, sr * 0.45), order=2)
+
+    pre = max(0, int(predelay_sec * sr))
     if pre:
         ir = np.concatenate([np.zeros(pre), ir])
-    ir /= np.sqrt(np.sum(ir ** 2)) + 1e-12           # エネルギー正規化
+    ir /= np.sqrt(np.sum(ir ** 2)) + 1e-12            # エネルギー正規化
+    ir.setflags(write=False)      # キャッシュを共有するので書き換え不可にする
     return ir
 
 
 def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
-    """畳み込みリバーブ。mix(0..1) で dry/wet を混ぜる。残響の尾は出力長に含める。"""
+    """畳み込みリバーブ。mix は「送り量」として扱う。残響の尾は出力長に含める。
+
+    dry を減らさず wet を足す（センド方式）。dry/wet のクロスフェードにすると、
+    残響を増やすほど元の声が引っ込み、輪郭が失われて籠って聴こえるため。
+    mix=0 のときは入力をそのまま返す（AC-4 の恒等性を保つ）。
+    """
     if not reverb:
         return x
     mix = float(reverb.get("mix", 0.0))
@@ -339,11 +414,13 @@ def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
         return x
     from scipy.signal import fftconvolve
     decay = float(reverb.get("decaySec", 1.2))
-    ir = make_reverb_ir(sample_rate, decay)
+    ir = make_reverb_ir(sample_rate, decay,
+                        predelay_sec=float(reverb.get("predelaySec", REVERB_PREDELAY_SEC)),
+                        damping=float(reverb.get("damping", REVERB_DAMPING)))
     wet = fftconvolve(x, ir)                          # len = len(x)+len(ir)-1（尾を含む）
     out = np.zeros(len(wet), dtype=np.float64)
-    out[: len(x)] += (1.0 - mix) * x                 # dry
-    out += mix * wet                                 # wet（残響の尾まで）
+    out[: len(x)] += x                                # dry はそのまま
+    out += (REVERB_WET_AT_FULL * min(1.0, mix)) * wet  # wet を足す
     return out
 
 
