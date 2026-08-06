@@ -195,7 +195,131 @@
     return Object.assign({}, note, { segments: ns });
   }
 
+  // ==========================================================================
+  // キー判定とハモリガイド
+  // ==========================================================================
+  // Krumhansl-Schmuckler のキープロファイル（各音高クラスの「その調らしさ」）。
+  const KS_MAJOR = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+  const KS_MINOR = [6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
+  const MAJOR_STEPS = [0, 2, 4, 5, 7, 9, 11];
+  const MINOR_STEPS = [0, 2, 3, 5, 7, 8, 10];   // 自然短音階
+  const scaleSteps = (mode) => (mode === "minor" ? MINOR_STEPS : MAJOR_STEPS);
+
+  // 編集後の絶対音高。ガイドは編集結果に追従させたいので offset を含める。
+  const segCents = (s) => s.baseCents + (s.pitchOffsetCents || 0);
+  const segDur = (s) => Math.max(0.01, s.endSec - s.startSec);
+
+  /** 全体のチューニングずれ [cent]。各音の「最寄り半音からのずれ」の音価重み付き円環平均。
+   *  録音全体が一律にずれていると音高クラスがぼやけて判定が壊れるため、先に差し引く。 */
+  const TUNING_CONCENTRATION_MIN = 0.5;
+  function estimateTuningOffset(segs) {
+    let re = 0, im = 0, wsum = 0;
+    for (const s of segs) {
+      const dev = ((segCents(s) % 100) + 150) % 100 - 50;   // -50..+50
+      const ang = dev * Math.PI / 50;                       // ±50cent → ±π
+      const w = segDur(s);
+      re += w * Math.cos(ang); im += w * Math.sin(ang); wsum += w;
+    }
+    if (!wsum) return 0;
+    // ずれがばらついているだけ（＝一律のずれではない）なら補正しない。
+    // ここを見ないと、歌が不安定なだけの素材に対して大きな偽の補正が掛かり、
+    // かえって判定を壊す（実測: ±45cent のばらつきで 47cent もの誤補正が出た）。
+    const concentration = Math.hypot(re, im) / wsum;
+    if (concentration < TUNING_CONCENTRATION_MIN) return 0;
+    return Math.atan2(im, re) * 50 / Math.PI;
+  }
+
+  /** 音高クラス分布（音価で重み付け）。ずれ補正後に最寄り半音へ丸める。
+   *  隣へ按分する方式も試したが、ずれが 50cent 未満なら丸めた方が精度が高い。 */
+  function pitchClassProfile(segs, offsetCents) {
+    const pcp = new Array(12).fill(0);
+    for (const s of segs) {
+      const pc = ((Math.round((segCents(s) - offsetCents) / 100) % 12) + 12) % 12;
+      pcp[pc] += segDur(s);
+    }
+    return pcp;
+  }
+
+  function _corr(a, b) {
+    const n = a.length;
+    let ma = 0, mb = 0;
+    for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+    ma /= n; mb /= n;
+    let num = 0, da = 0, db = 0;
+    for (let i = 0; i < n; i++) {
+      const x = a[i] - ma, y = b[i] - mb;
+      num += x * y; da += x * x; db += y * y;
+    }
+    return (da <= 0 || db <= 0) ? 0 : num / Math.sqrt(da * db);
+  }
+
+  /** キー判定。24 通り（12音 × 長短）とプロファイル相関を取り、上位を返す。
+   *  confidence = 1位と2位の相関差。小さいときは平行調との取り違えを疑う。 */
+  function detectKey(segs) {
+    const list = (segs || []).filter((s) => isFinite(segCents(s)));
+    if (!list.length) return null;
+    const offsetCents = estimateTuningOffset(list);
+    const pcp = pitchClassProfile(list, offsetCents);
+    const cands = [];
+    for (let t = 0; t < 12; t++) {
+      for (const mode of ["major", "minor"]) {
+        const base = mode === "major" ? KS_MAJOR : KS_MINOR;
+        const prof = new Array(12);
+        for (let i = 0; i < 12; i++) prof[i] = base[(i - t + 12) % 12];
+        cands.push({ tonic: t, mode, r: _corr(pcp, prof) });
+      }
+    }
+    cands.sort((a, b) => b.r - a.r);
+    return {
+      tonic: cands[0].tonic, mode: cands[0].mode,
+      confidence: cands[0].r - cands[1].r,
+      candidates: cands.slice(0, 3),
+      offsetCents, noteCount: list.length, profile: pcp,
+    };
+  }
+
+  const keyName = (tonic, mode) =>
+    NOTE_NAMES[((tonic % 12) + 12) % 12] + (mode === "minor" ? " minor" : " major");
+
+  /** キー内で degSteps 段ぶん動かした音高 [cent]。
+   *  段数で数えるので「3度上」が長3度/短3度に自動で切り替わる（キー判定の価値はここ）。
+   *  音階外の音は最寄りの音階音へ寄せた上で、半音のズレを保持する（ブルーノートを潰さない）。 */
+  function diatonicShift(cents, tonic, mode, degSteps) {
+    const steps = scaleSteps(mode);
+    const midi = Math.round(cents / 100);
+    const rel = ((midi - tonic) % 12 + 12) % 12;
+    const oct = Math.floor((midi - tonic) / 12);
+    let deg = 0, best = 99;
+    for (let d = 0; d < 7; d++) {
+      const diff = Math.abs(steps[d] - rel);
+      if (diff < best) { best = diff; deg = d; }
+    }
+    const chroma = rel - steps[deg];                    // 音階外なら ±1 など
+    const nd = deg + degSteps;
+    const ndOct = Math.floor(nd / 7), ndDeg = ((nd % 7) + 7) % 7;
+    const outMidi = tonic + (oct + ndOct) * 12 + steps[ndDeg] + chroma;
+    return outMidi * 100 + (cents - midi * 100);        // 元の微小なずれも維持
+  }
+
+  /** ハモリガイド。度数(3,4,5,6…) と方向から、各セグメントの目標音高を返す。
+   *  返すのは描画用の素データのみ（音は鳴らさない・編集もしない）。 */
+  function harmonyGuides(segs, key, degree, direction) {
+    if (!key || !segs || !segs.length) return [];
+    const steps = (Math.max(2, Math.round(degree)) - 1) * (direction === "down" ? -1 : 1);
+    const out = [];
+    for (const s of segs) {
+      out.push({
+        startSec: s.startSec, endSec: s.endSec,
+        cents: diatonicShift(segCents(s), key.tonic, key.mode, steps),
+        srcCents: segCents(s),
+      });
+    }
+    return out;
+  }
+
   return { A4_CENTS, hzToCents, centsToHz, isBlackKey, centsToName,
+           estimateTuningOffset, pitchClassProfile, detectKey, keyName,
+           diatonicShift, harmonyGuides, MAJOR_STEPS, MINOR_STEPS,
            snapStep, snapCents, computeDragOffset,
            segAtTime, segAtPoint, offsetAtTime, pitchRange, makeTransforms,
            newId, gainFillFraction, fillFractionToGainDb,

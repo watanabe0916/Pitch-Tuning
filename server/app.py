@@ -292,7 +292,11 @@ def _render_vocal_signal(sess: Session, es: dict) -> np.ndarray:
     global_notes = notes_from_json(es.get("notes", []))
     master = float(es.get("masterGainDb", 0.0))
 
-    parts = _render_primary_parts(sess, global_notes)
+    # includePrimary=False で「ハモリ声部だけ」を合成する。
+    # クライアントがハモリをトラックとして独立に鳴らす（再生中の ON/OFF を
+    # 音量ノードで即座に切り替える）ために使う。注意: 主ボイスを空配列にしても
+    # 無編集扱いで原音がそのまま返るため、明示的に飛ばす必要がある。
+    parts = [] if es.get("includePrimary") is False else _render_primary_parts(sess, global_notes)
     for h in es.get("harmonies", []) or []:
         parts += _render_harmony_parts(sess, notes_from_json(h.get("notes", [])))
 

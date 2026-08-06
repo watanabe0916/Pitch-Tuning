@@ -13,7 +13,9 @@
       "Bash(node deletebug.js)",
       "Bash(nohup ./start.command)",
       "Bash(curl -s -o /dev/null -w \"server: HTTP %{http_code}\\\\n\" http://localhost:8000/)",
-      "Bash(curl -s http://localhost:8000/static/app.js)"
+      "Bash(curl -s http://localhost:8000/static/app.js)",
+      "Bash(timeout 110 /Users/w.kout/Desktop/Pitch-Tuning/.venv/bin/python keyrobust_fast.py)",
+      "Bash(node tests/test_reclogic.js)"
     ],
     "additionalDirectories": [
       "/Users/w.kout/Desktop/Pitch-Tuning/server/static"

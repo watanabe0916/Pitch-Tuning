@@ -142,4 +142,90 @@ ok("carve 範囲外は null", PL.carveSegment(cnote, 3.0, 4.0) === null);
 const carveEdge = PL.carveSegment(cnote, 0, 1.0);   // 先頭境界に接する
 ok("先頭に接する carve", carveEdge && Math.abs(carveEdge.seg.startSec) < 1e-6);
 
+// ==========================================================================
+// キー判定とハモリガイド
+// ==========================================================================
+const sg = (st, en, cents) => ({ id: "k" + st + cents, startSec: st, endSec: en,
+                                 baseCents: cents, pitchOffsetCents: 0 });
+
+// --- チューニングずれの推定 ---
+const inTune = [sg(0, 1, 6000), sg(1, 2, 6400), sg(2, 3, 6700)];
+ok("ずれ無しなら offset≈0", Math.abs(PL.estimateTuningOffset(inTune)) < 1e-6);
+const flat30 = inTune.map((s) => Object.assign({}, s, { baseCents: s.baseCents - 30 }));
+ok("一律 -30cent を検出", near(PL.estimateTuningOffset(flat30), -30, 1e-6));
+const sharp45 = inTune.map((s) => Object.assign({}, s, { baseCents: s.baseCents + 45 }));
+ok("一律 +45cent を検出", near(PL.estimateTuningOffset(sharp45), 45, 1e-6));
+// ばらついているだけの素材に偽の補正を掛けない（ここが無いと判定が壊れる）。
+// ±50cent は円環上で同じ位置に回り込むので、散らばり例は角度が広がるよう選ぶ。
+const scattered = [sg(0,1,6000-40), sg(1,2,6400+10), sg(2,3,6700+40),
+                   sg(3,4,6900-10), sg(4,5,7200+25), sg(5,6,7400-25)];
+ok("ばらつきだけなら補正しない", PL.estimateTuningOffset(scattered) === 0);
+const nearlyUniform = [sg(0,1,6020), sg(1,2,6425), sg(2,3,6715), sg(3,4,6922)];
+ok("ほぼ一律なら補正する", Math.abs(PL.estimateTuningOffset(nearlyUniform) - 20.5) < 1.0);
+
+// --- 音高クラス分布は音価で重み付け ---
+const pcp = PL.pitchClassProfile([sg(0, 3, 6000), sg(3, 4, 6400)], 0);
+ok("長い音ほど重い", pcp[0] === 3 && pcp[4] === 1);
+ok("分布は12要素", pcp.length === 12);
+
+// --- キー判定（C メジャーの旋律）---
+const cmaj = [sg(0,1,6000), sg(1,2,6400), sg(2,3,6700), sg(3,4,6900),
+              sg(4,5,6700), sg(5,6,6400), sg(6,7.5,6000), sg(7.5,8,7200)];
+const k1 = PL.detectKey(cmaj);
+ok("C major を判定", k1.tonic === 0 && k1.mode === "major");
+ok("キー名の整形", PL.keyName(k1.tonic, k1.mode) === "C major");
+ok("候補は3件返る", k1.candidates.length === 3);
+ok("確信度は1位と2位の差", near(k1.confidence, k1.candidates[0].r - k1.candidates[1].r, 1e-12));
+
+// ずれがあっても同じ判定になる（今回の検証の要点）
+const jitter = [-40, 25, -15, 45, -30, 10, 35, -20];
+const cmajOff = cmaj.map((s, i) => Object.assign({}, s, { baseCents: s.baseCents + jitter[i] }));
+ok("±45cent のばらつきがあっても C major", (() => {
+  const k = PL.detectKey(cmajOff); return k.tonic === 0 && k.mode === "major";
+})());
+ok("ばらつき時に偽の補正が掛からない", Math.abs(PL.detectKey(cmajOff).offsetCents) < 1e-9);
+const cmajDetuned = cmaj.map((s) => Object.assign({}, s, { baseCents: s.baseCents - 35 }));
+ok("一律 -35cent ずれても C major", (() => {
+  const k = PL.detectKey(cmajDetuned); return k.tonic === 0 && k.mode === "major";
+})());
+ok("一律ずれは補正値として報告される",
+   near(PL.detectKey(cmajDetuned).offsetCents, -35, 1e-6));
+// 半音まるごと間違えた音が1つ混ざっても判定は変わらない
+const cmajWrong = cmaj.map((s, i) => i === 3
+  ? Object.assign({}, s, { baseCents: s.baseCents + 100 }) : s);
+ok("半音間違いが1音あっても C major", (() => {
+  const k = PL.detectKey(cmajWrong); return k.tonic === 0 && k.mode === "major";
+})());
+ok("空入力は null", PL.detectKey([]) === null);
+
+// --- 度数計算（キー内の段数で数える）---
+ok("C major で C の3度上 = E (+400)", PL.diatonicShift(6000, 0, "major", 2) === 6400);
+ok("C major で E の3度上 = G (+300)", PL.diatonicShift(6400, 0, "major", 2) === 6700);
+ok("C major で B の3度上 = D (+300)", PL.diatonicShift(7100, 0, "major", 2) === 7400);
+ok("C major で C の3度下 = A (-300)", PL.diatonicShift(6000, 0, "major", -2) === 5700);
+ok("C major で C の5度上 = G (+700)", PL.diatonicShift(6000, 0, "major", 4) === 6700);
+ok("C major で C の6度上 = A (+900)", PL.diatonicShift(6000, 0, "major", 5) === 6900);
+ok("A minor で A の3度上 = C (+300)", PL.diatonicShift(6900, 9, "minor", 2) === 7200);
+ok("A minor で C の3度上 = E (+400)", PL.diatonicShift(7200, 9, "minor", 2) === 7600);
+// B の6度上は B-C-D-E-F-G で G（+800）。単純な平行移動なら G#(+900) になってしまう。
+ok("オクターブをまたぐ (B の6度上=G)", PL.diatonicShift(7100, 0, "major", 5) === 7900);
+ok("音階外の音は半音のズレを保つ", PL.diatonicShift(6100, 0, "major", 2) === 6500);
+ok("微小なずれも維持される", near(PL.diatonicShift(6023, 0, "major", 2), 6423, 1e-9));
+
+// --- ハモリガイド ---
+const gsegs = [sg(0, 1, 6000), sg(1, 2, 6400)];
+const guides = PL.harmonyGuides(gsegs, { tonic: 0, mode: "major" }, 3, "up");
+ok("ガイドは入力と同数", guides.length === 2);
+ok("ガイドは時間を引き継ぐ", guides[0].startSec === 0 && guides[0].endSec === 1);
+ok("3度上ガイドの音高", guides[0].cents === 6400 && guides[1].cents === 6700);
+const gdown = PL.harmonyGuides(gsegs, { tonic: 0, mode: "major" }, 3, "down");
+ok("3度下ガイドの音高", gdown[0].cents === 5700 && gdown[1].cents === 6000);
+const g5 = PL.harmonyGuides(gsegs, { tonic: 0, mode: "major" }, 5, "up");
+ok("5度上ガイドの音高", g5[0].cents === 6700);
+ok("キー未確定ならガイド無し", PL.harmonyGuides(gsegs, null, 3, "up").length === 0);
+ok("編集後の音程に追従", (() => {
+  const moved = [{ id: "m", startSec: 0, endSec: 1, baseCents: 6000, pitchOffsetCents: 200 }];
+  return PL.harmonyGuides(moved, { tonic: 0, mode: "major" }, 3, "up")[0].cents === 6500;
+})());
+
 console.log(`\n${pass} checks passed`);

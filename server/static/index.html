@@ -86,6 +86,31 @@
     <span class="sep"></span>
 
     <div class="tgroup">
+      <span class="tgroup-label">Harmony</span>
+      <button id="harmtoggle" class="tgl" title="作成前に目標の音程を半透明で表示します（録音1 の音程から算出）">ガイド</button>
+      <label class="slider" title="キー。自動判定を使うか、手動で指定します">キー
+        <select id="harmkey"><option value="auto">自動</option></select>
+      </label>
+      <span id="harmkeyinfo" class="keyinfo" title="自動判定の結果と確信度">–</span>
+      <label class="slider" title="ハモリの度数">度
+        <select id="harmdeg">
+          <option value="3" selected>3度</option>
+          <option value="4">4度</option>
+          <option value="5">5度</option>
+          <option value="6">6度</option>
+        </select>
+      </label>
+      <label class="slider" title="上下">
+        <select id="harmdir">
+          <option value="up" selected>上</option>
+          <option value="down">下</option>
+        </select>
+      </label>
+      <button id="harmmake" title="録音1 の音程からハモリ声部を作ります。選択中のバーがあればそれだけ、無ければトラック全体が対象です">＋ ハモリ追加</button>
+    </div>
+    <span class="sep"></span>
+
+    <div class="tgroup">
       <span class="tgroup-label">Zoom</span>
       <span class="zoomset">
         <span class="zaxis">↔</span>
@@ -126,7 +151,7 @@
     <b>Cmd/Ctrl+C</b>→カーソルを置いて<b>V</b>=<b>ハモリを任意音程で複製</b> ・ <b>Delete</b>=ハモリ削除 ・
     <b>録音</b>=新しいトラックを追加（既存の音声を聴きながら重ね録り）・
     Tracksの<b>×</b>=トラック削除（Cmd/Ctrl+Zで戻せる）・
-    ホイール=上下スクロール／<b>Shift</b>+ホイール=左右 ・ Masterを上げてノイズが気になるときは<b>ノイズ低減</b> ・ Zoomの<b>↔</b>=時間軸／<b>↕</b>=音程軸 ・ <b>Cmd/Ctrl</b>+ホイール=横ズーム（<b>Shift</b>併用で縦）
+    ホイール=上下スクロール／<b>Shift</b>+ホイール=左右 ・ Harmonyの<b>＋ハモリ追加</b>=録音1からハモリ声部を作成（Tracksに追加）／<b>ガイド</b>=作る前に音程を確認 ・ Masterを上げてノイズが気になるときは<b>ノイズ低減</b> ・ Zoomの<b>↔</b>=時間軸／<b>↕</b>=音程軸 ・ <b>Cmd/Ctrl</b>+ホイール=横ズーム（<b>Shift</b>併用で縦）
   </div>
 
   <div id="editor" class="editor">

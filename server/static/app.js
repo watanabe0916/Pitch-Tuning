@@ -23,6 +23,12 @@ const state = {
   reverb: { mix: 0.0, decaySec: 1.2 },   // 出力段リバーブ
   delay: { timeMs: 28, feedback: 0.3, mix: 0.0 },   // 出力段ディレイ（mix=0 で off）
   noiseGate: { reductionDb: 0 },         // ノイズ低減（何dB下げるか・0 で off）
+  // ハモリガイド（表示のみ・音は鳴らさない）。key=null なら自動判定の結果を使う。
+  harmony: { on: false, key: null, degree: 3, direction: "up" },
+  detectedKey: null,                     // 自動判定の結果（確信度・候補つき）
+  harmEnabled: {},                       // ハモリ声部の再生 ON/OFF（voice → bool）
+  harmBufs: {},                          // ハモリ声部ごとの音声（voice → AudioBuffer）
+  harmDirty: {},                         // 再合成が必要な voice
   pxPerSec: 260,        // 横ズーム率
   pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
@@ -93,6 +99,12 @@ const els = {
   delaymixval: document.getElementById("delaymixval"),
   nrate: document.getElementById("nrate"),
   nrateval: document.getElementById("nrateval"),
+  harmtoggle: document.getElementById("harmtoggle"),
+  harmkey: document.getElementById("harmkey"),
+  harmkeyinfo: document.getElementById("harmkeyinfo"),
+  harmdeg: document.getElementById("harmdeg"),
+  harmdir: document.getElementById("harmdir"),
+  harmmake: document.getElementById("harmmake"),
   hintbar: document.getElementById("hintbar"),
   guidetoggle: document.getElementById("guidetoggle"),
   undo: document.getElementById("undo"),
@@ -426,6 +438,7 @@ function renderScene(ctx, v, skip) {
     ctx.setLineDash([]);
   }
 
+  drawHarmonyGuides(ctx, v, vis);
   drawF0Curve(ctx, v, vis);
   for (const note of allNotes()) {
     note.segments.forEach((s, i) => {
@@ -434,6 +447,32 @@ function renderScene(ctx, v, skip) {
       drawOneSegment(ctx, v, note, s, i);
     });
   }
+}
+
+// ハモリガイド: 音源1の各バーに対する「キーに沿った目標音程」を半透明で敷く。
+// 音は鳴らさず編集もしない。ユーザーはコピーしたトラックをここへ合わせる。
+function drawHarmonyGuides(ctx, v, vis) {
+  const h = state.harmony;
+  if (!h.on) return;
+  const key = activeKey();
+  if (!key) return;
+  const segs = harmonySourceSegs().filter((sg) => !(sg.endSec < vis.t0 || sg.startSec > vis.t1));
+  if (!segs.length) return;
+  const guides = PL.harmonyGuides(segs, key, h.degree, h.direction);
+  const rowH = v.rowHeightPx;
+  ctx.save();
+  ctx.setLineDash([5, 4]);
+  for (const g of guides) {
+    const x0 = v.timeToX(g.startSec), x1 = v.timeToX(g.endSec);
+    const y = v.centsToY(g.cents);
+    const hgt = Math.max(3, rowH * 0.62);
+    ctx.fillStyle = "rgba(79,183,176,0.18)";      // ハモリ声部と同じティール系
+    ctx.fillRect(x0, y - hgt / 2, Math.max(2, x1 - x0), hgt);
+    ctx.strokeStyle = "rgba(111,209,201,0.75)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, y - hgt / 2 + 0.5, Math.max(2, x1 - x0) - 1, hgt - 1);
+  }
+  ctx.restore();
 }
 
 // 白い F0 曲線（編集オフセットを反映した表示用の近似）
@@ -499,16 +538,17 @@ function drawOneSegment(ctx, v, note, s, i) {
     const harm = !!note.voice;
     const dub = !!note.dub;
     const dc = dub ? dubColorOf(note) : null;
+    const hc = harm ? harmColorOf(note) : null;
     ctx.fillStyle = active
-      ? (dub ? `rgba(${dc.bright},0.95)` : harm ? "rgba(94,196,189,0.95)" : "rgba(244,192,107,0.95)")
+      ? (dub ? `rgba(${dc.bright},0.95)` : harm ? `rgba(${hc},0.95)` : "rgba(244,192,107,0.95)")
       : (selected
-        ? (dub ? `rgba(${dc.bright},0.9)` : harm ? "rgba(79,183,176,0.9)" : "rgba(232,162,61,0.92)")
+        ? (dub ? `rgba(${dc.bright},0.9)` : harm ? `rgba(${hc},0.9)` : "rgba(232,162,61,0.92)")
         : (dub ? `rgba(${dc.base},${i % 2 ? 0.66 : 0.76})`
-          : harm ? "rgba(69,163,156,0.72)"
+          : harm ? `rgba(${hc},${i % 2 ? 0.62 : 0.72})`
             : (i % 2 ? "rgba(196,138,58,0.68)" : "rgba(216,154,68,0.78)")));
     ctx.fillRect(x0, yBot - fh, w, fh);
     ctx.strokeStyle = selected ? "rgba(255,224,150,1)"
-      : (dub ? `rgba(${dc.stroke},0.85)` : harm ? "rgba(150,224,218,0.9)" : "rgba(244,208,140,0.85)");
+      : (dub ? `rgba(${dc.stroke},0.85)` : harm ? `rgba(${hc},1)` : "rgba(244,208,140,0.85)");
     ctx.lineWidth = selected ? 2 : 1;
     ctx.strokeRect(x0 + 0.5, yTop + 0.5, w - 1, h - 1);
     ctx.lineWidth = 1;
@@ -615,8 +655,10 @@ function hitTest(px, t, cents) {
 function commitEdit(changed) {
   if (!changed) return;
   pushUndo();             // commitEdit は全編集の合流点。ここで直前状態を undo へ。
+  detectKeyNow();         // 音程を動かすとキーも変わりうるので判定し直す
   state.dirty = true;
   for (const d of state.dubs) d.dirty = true;   // レイヤーも次回レンダで更新
+  for (const v of harmonyVoices()) state.harmDirty[v] = true;
   draw();
   renderAndLoad(false);   // 再合成して準備（自動再生はしない）
 }
@@ -629,7 +671,8 @@ function snapshotState() {
     mainSid: state.session ? state.session.sessionId : null,
     notes: state.session ? state.session.notes : [],
     master: state.master, reverb: state.reverb, delay: state.delay,
-    noiseGate: state.noiseGate,
+    noiseGate: state.noiseGate, harmony: state.harmony,
+    harmEnabled: Object.assign({}, state.harmEnabled),
     dubs: state.dubs.map((d) => ({ sessionId: d.sessionId, notes: d.notes })),
   });
 }
@@ -666,6 +709,8 @@ function applySnapshot(snap) {
   state.reverb = o.reverb || { mix: 0, decaySec: 1.2 };
   state.delay = o.delay || { timeMs: 28, feedback: 0.3, mix: 0 };
   state.noiseGate = o.noiseGate || { reductionDb: 0 };
+  state.harmony = Object.assign({ on: false, key: null, degree: 3, direction: "up" }, o.harmony);
+  state.harmEnabled = Object.assign({}, o.harmEnabled);
   // 追加トラックの復元: スナップショットの一覧に合わせて再構成する。
   // 現存すればノートだけ差し替え、削除済みならレジストリから復活（バッファは dirty で再レンダ）。
   const newDubs = [];
@@ -684,7 +729,7 @@ function applySnapshot(snap) {
   // UI 同期
   els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
   els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
-  syncDelayUI(); syncNoiseUI();
+  syncDelayUI(); syncNoiseUI(); syncHarmonyUI();
   syncSliders();
   state.dirty = true;
   draw();
@@ -1154,6 +1199,184 @@ function normalizeDelay(d) {
   if (o.mix == null && d && d.level != null) o.mix = d.level;
   return { timeMs: +o.timeMs, feedback: +o.feedback, mix: +o.mix };
 }
+// ==========================================================================
+// ハモリガイド（表示のみ。音は鳴らさず、EditState も変えない）
+// ==========================================================================
+// 判定材料は「音源1（主トラック）の主ボイス」のセグメント。
+// ハモリ声部や重ねどりを混ぜると、それ自体がキーを歪めるため使わない。
+// 現在ある ハモリ声部の voice 番号（昇順）。Tracks の「ハモリN」に対応する。
+function harmonyVoices() {
+  if (!state.session) return [];
+  const set = new Set();
+  for (const n of state.session.notes) if (n.voice) set.add(n.voice);
+  return Array.from(set).sort((a, b) => a - b);
+}
+const harmEnabled = (voice) => state.harmEnabled[voice] !== false;
+
+// ハモリ声部の色（Tracks ボタンとバーで共有）。ティール系で録音トラックと区別する。
+const HARM_HEX = ["#4fb7b0", "#63c98f", "#4f9ec9", "#7bc0a6"];
+const harmColorHex = (idx) => HARM_HEX[idx % HARM_HEX.length];
+const HARM_RGB = ["79,183,176", "99,201,143", "79,158,201", "123,192,166"];
+function harmColorOf(note) {
+  const i = harmonyVoices().indexOf(note.voice);
+  return HARM_RGB[(i < 0 ? 0 : i) % HARM_RGB.length];
+}
+
+function harmonySourceSegs() {
+  if (!state.session) return [];
+  const out = [];
+  for (const n of state.session.notes) {
+    if (n.voice) continue;                       // ハモリ声部は除く
+    for (const sg of n.segments) out.push(sg);
+  }
+  return out;
+}
+
+// UI 要素が揃っているか（古い HTML がキャッシュされている場合の保険）。
+// 欠けていてもアプリ全体は動き、ハモリガイドだけが無効になる。
+const HARM_UI = !!(els.harmtoggle && els.harmkey && els.harmkeyinfo
+                   && els.harmdeg && els.harmdir && els.harmmake);
+
+// キー選択肢（自動 + 24キー）を一度だけ作る。
+if (HARM_UI) (function buildKeyOptions() {
+  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  for (const mode of ["major", "minor"]) {
+    for (let t = 0; t < 12; t++) {
+      const o = document.createElement("option");
+      o.value = t + ":" + mode;
+      o.textContent = names[t] + (mode === "minor" ? " minor" : " major");
+      els.harmkey.appendChild(o);
+    }
+  }
+})();
+
+// 自動判定を実行して表示を更新する。音源が変わった時と編集の合流点から呼ぶ。
+function detectKeyNow() {
+  const segs = harmonySourceSegs();
+  state.detectedKey = segs.length ? PL.detectKey(segs) : null;
+  syncHarmonyUI();
+}
+
+// 実際に使うキー: 手動指定があればそれ、無ければ自動判定。
+function activeKey() {
+  return state.harmony.key || state.detectedKey || null;
+}
+
+function syncHarmonyUI() {
+  if (!HARM_UI) return;
+  const h = state.harmony, d = state.detectedKey;
+  // 録音が1本も無ければハモリは作れない（算出元が存在しないため）
+  const hasSource = harmonySourceSegs().length > 0;
+  els.harmmake.disabled = !hasSource || state.audio.playing;
+  els.harmmake.title = hasSource
+    ? "録音1 の音程からハモリ声部を作ります。選択中のバーがあればそれだけ、無ければトラック全体が対象です"
+    : "録音1 がありません。音声を読み込むか録音するとハモリを作れます";
+  els.harmtoggle.classList.toggle("on", h.on);
+  els.harmkey.value = h.key ? (h.key.tonic + ":" + h.key.mode) : "auto";
+  els.harmdeg.value = String(h.degree);
+  els.harmdir.value = h.direction;
+  if (!d) {
+    els.harmkeyinfo.textContent = "–";
+    els.harmkeyinfo.style.color = "var(--ink-dim)";
+    els.harmkeyinfo.title = "音声を読み込むと自動判定します";
+    return;
+  }
+  // 確信度 = 1位と2位の相関差。小さいほど平行調などとの取り違えを疑う。
+  const conf = d.confidence;
+  const weak = conf < 0.05 || d.noteCount < 12;
+  els.harmkeyinfo.textContent =
+    "自動: " + PL.keyName(d.tonic, d.mode) + (weak ? " ?" : "");
+  els.harmkeyinfo.style.color = weak ? "var(--red-bright)" : "var(--teal)";
+  const alt = d.candidates.slice(1).map((c) => PL.keyName(c.tonic, c.mode)).join(" / ");
+  els.harmkeyinfo.title =
+    `自動判定: ${PL.keyName(d.tonic, d.mode)}（確信度 ${conf.toFixed(3)} / 判定に使った音 ${d.noteCount}）\n` +
+    `次点: ${alt}\n` +
+    (d.offsetCents ? `全体のチューニングずれ ${d.offsetCents.toFixed(0)}cent を補正して判定\n` : "") +
+    (weak ? "※ 確信度が低いか音数が足りません。キーを手動で指定してください" : "");
+}
+
+// ハモリ声部の削除（Cmd/Ctrl+Z で戻せる）。
+function deleteHarmonyVoice(voice, label) {
+  if (!state.session || state.audio.playing) return;
+  const keep = state.session.notes.filter((n) => n.voice !== voice);
+  if (keep.length === state.session.notes.length) return;
+  state.session.notes = keep;
+  delete state.harmEnabled[voice];
+  setSelection([]);
+  rebuildTrackButtons();
+  draw();
+  commitEdit(true);
+  setStatus((label || "ハモリ") + " を削除しました（Cmd/Ctrl+Z で戻せます）");
+}
+
+// ガイドの音程どおりにハモリ声部を作る。
+// 対象は「選択中のバー」、選択が無ければ主トラック全体。
+// 単純な平行移動ではなくバーごとにガイドの音高へ合わせるので、キーに沿った
+// 度数（長3度/短3度の切り替わり）がそのまま反映される。
+function createHarmonyFromGuides() {
+  if (!state.session || state.audio.playing) return;
+  const key = activeKey();
+  if (!key) { setStatus("キーが判定できません。キーを手動で指定してください"); return; }
+
+  const all = harmonySourceSegs();
+  const picked = state.selection.filter((sg) => all.indexOf(sg) >= 0);
+  const srcSegs = picked.length ? picked : all;
+  if (!srcSegs.length) { setStatus("ハモリの元になるバーがありません"); return; }
+
+  // ガイド描画とまったく同じ関数で音程を出す（表示と結果が食い違わないように）
+  const guides = PL.harmonyGuides(srcSegs, key, state.harmony.degree, state.harmony.direction);
+  const target = new Map();
+  srcSegs.forEach((sg, i) => target.set(sg, guides[i].cents));
+
+  const voice = nextVoiceId();
+  const newSel = [];
+  for (const note of state.session.notes.slice()) {
+    if (note.voice) continue;                       // 主ボイスのみを元にする
+    const segs = note.segments.filter((sg) => target.has(sg));
+    if (!segs.length) continue;
+    // 元のノート単位を保つ。同じノート内の境界だけが遷移補間の対象なので、
+    // ここをばらすとハモリ側の音のつながりが元と変わってしまう。
+    const nn = { id: PL.newId(), voice, segments: segs.map((sg) => Object.assign({}, sg, {
+      id: PL.newId(), pitchOffsetCents: target.get(sg) - sg.baseCents,
+    })) };
+    state.session.notes.push(nn);
+    for (const sg of nn.segments) newSel.push(sg);
+  }
+  if (!newSel.length) { setStatus("ハモリを作成できませんでした"); return; }
+
+  setSelection(newSel);          // 作成したハモリは全選択のまま残す
+  rebuildTrackButtons();         // Tracks に ハモリN を追加
+  commitEdit(true);
+  const dirLabel = state.harmony.direction === "up" ? "上" : "下";
+  const idx = harmonyVoices().indexOf(voice) + 1;
+  setStatus(`ハモリ${idx} を追加（${PL.keyName(key.tonic, key.mode)} の` +
+            `${state.harmony.degree}度${dirLabel} / ${newSel.length} バー）。全選択中です`);
+}
+
+if (HARM_UI) {
+els.harmmake.addEventListener("click", createHarmonyFromGuides);
+els.harmtoggle.addEventListener("click", () => {
+  state.harmony.on = !state.harmony.on;
+  syncHarmonyUI(); draw();
+  const k = activeKey();
+  setStatus(!state.harmony.on ? "ガイドを非表示にしました"
+    : k ? `ガイド: ${PL.keyName(k.tonic, k.mode)} の${state.harmony.degree}度${state.harmony.direction === "up" ? "上" : "下"}`
+        : "キーが判定できません。キーを手動で指定してください");
+});
+els.harmkey.addEventListener("change", () => {
+  const v = els.harmkey.value;
+  state.harmony.key = v === "auto" ? null
+    : { tonic: parseInt(v.split(":")[0], 10), mode: v.split(":")[1] };
+  syncHarmonyUI(); draw();
+});
+els.harmdeg.addEventListener("change", () => {
+  state.harmony.degree = parseInt(els.harmdeg.value, 10); draw();
+});
+els.harmdir.addEventListener("change", () => {
+  state.harmony.direction = els.harmdir.value; draw();
+});
+}
+
 // ノイズ低減はスライダーを右へ動かすほど強く下げる（表示は実際の減衰量 dB）。
 // 保存済みプロジェクトの旧形式（amount = 0..1 の強さ）も読めるようにする。
 function normalizeNoiseGate(g) {
@@ -1320,7 +1543,7 @@ els.projsave.addEventListener("click", () => {
   if (!state.session) return;
   const proj = {
     version: 1, fileName: state.session.fileName || "vocal",
-    durationSec: state.session.durationSec, editState: buildEditState()
+    durationSec: state.session.durationSec, editState: buildEditState(true)
   };
   const blob = new Blob([JSON.stringify(proj, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -1343,7 +1566,7 @@ els.projfile.addEventListener("change", async (e) => {
     state.noiseGate = normalizeNoiseGate(es.noiseGate);
     els.master.value = state.master; els.masterval.textContent = state.master.toFixed(1) + "dB";
     els.reverb.value = state.reverb.mix; els.reverbval.textContent = Math.round(state.reverb.mix * 100) + "%";
-    syncDelayUI(); syncNoiseUI();
+    syncDelayUI(); syncNoiseUI(); syncHarmonyUI();
     setSelection([]); state.clipboard = null;
     initUndo(); draw(); state.dirty = true; renderAndLoad(false);
     setStatus("プロジェクトを読み込みました");
@@ -1396,8 +1619,11 @@ els.file.addEventListener("change", async (e) => {
     if (oldSid && oldSid !== j.sessionId && !state.sessReg[oldSid])
       fetch(`/api/session/${oldSid}`, { method: "DELETE" }).catch(() => {});
     state.dubs = [];
+    state.harmEnabled = {};        // 旧セッションのハモリ設定は持ち越さない
     state.sessReg = {}; state.sessReg[j.sessionId] = regFromSession(j);
     state.playMain = true;
+    state.detectedKey = null;
+    detectKeyNow();                 // キーを自動判定（ハモリガイド用）
     fitViewToNotes();               // 収録音域が画面いっぱいに見える縦ズーム・位置にする
     rebuildTrackButtons();          // ヘッダーの 録音1/録音2… ボタンを更新
     initUndo();                   // アンドゥ履歴を初期化
@@ -1429,15 +1655,21 @@ function regFromSession(j) {
   };
 }
 
-function buildEditState() {
+function buildEditState(withHarmonies) {
   // 主ボイス(voice 未設定)とハモリ(voice≥1)を分離して送る
   const all = state.session.notes;
   const primary = all.filter((n) => !n.voice);
-  const voices = {};
-  for (const n of all) if (n.voice) (voices[n.voice] = voices[n.voice] || []).push(n);
   const es = { notes: primary, masterGainDb: state.master };
-  const harms = Object.values(voices);
-  if (harms.length) es.harmonies = harms.map((notes) => ({ notes }));
+  // ハモリは既定では含めない。プレビューでは声部ごとに別バッファで鳴らし、
+  // Tracks の ON/OFF を再生中でも音量ノードで即座に切り替えるため。
+  // 書き出し時（withHarmonies）だけ、ON の声部をまとめて1つの信号に混ぜる。
+  if (withHarmonies) {
+    const voices = {};
+    for (const n of all) if (n.voice && harmEnabled(n.voice))
+      (voices[n.voice] = voices[n.voice] || []).push(n);
+    const harms = Object.values(voices);
+    if (harms.length) es.harmonies = harms.map((notes) => ({ notes }));
+  }
   if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
   if (state.delay.mix > 0) es.delay = { ...state.delay };
   if (state.noiseGate.reductionDb < 0) es.noiseGate = { ...state.noiseGate };
@@ -1659,6 +1891,9 @@ async function startRecording() {
       monBufs.push(["main", state.audio.buffer]);
     for (const d of state.dubs)
       if (d.enabled !== false && d.buffer) monBufs.push([d.sessionId, d.buffer]);
+    for (const voice of harmonyVoices())
+      if (harmEnabled(voice) && state.harmBufs[voice])
+        monBufs.push(["h" + voice, state.harmBufs[voice]]);
     const bbuf = state.backing && !state.backing.mute && state.backing.buffer;
     if (monBufs.length || bbuf) {
       monitorT0 = ctx.currentTime + 0.25;
@@ -1783,6 +2018,29 @@ function buildDubEditState(d) {
   return es;
 }
 
+// ハモリ声部だけを合成して受け取る（includePrimary:false）。
+// 主トラックとは別バッファにすることで、再生中の ON/OFF を音量ノードで
+// 即座に切り替えられる（録音トラックと同じ操作感）。
+async function renderHarmonyVoice(voice) {
+  const notes = state.session.notes.filter((n) => n.voice === voice);
+  if (!notes.length) { delete state.harmBufs[voice]; return; }
+  const es = {
+    notes: [], includePrimary: false, harmonies: [{ notes }],
+    masterGainDb: state.master,
+  };
+  if (state.reverb.mix > 0) es.reverb = { mix: state.reverb.mix, decaySec: state.reverb.decaySec };
+  if (state.delay.mix > 0) es.delay = { ...state.delay };
+  const res = await fetch("/api/render", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: state.session.sessionId, editState: es, mode: "preview" }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const buf = await ensureAudioCtx().decodeAudioData(await res.arrayBuffer());
+  if (!state.session || harmonyVoices().indexOf(voice) < 0) return;   // 途中で消えたら捨てる
+  state.harmBufs[voice] = buf;
+  delete state.harmDirty[voice];
+}
+
 async function renderDub(d) {
   const res = await fetch("/api/render", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1861,7 +2119,7 @@ async function exportAudio() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         sessionId: state.session.sessionId,
-        editState: buildEditState(),
+        editState: buildEditState(true),   // 書き出しは ON のハモリを含めて1本に混ぜる
         target: state.backing ? "mix" : "vocal",   // 伴奏があればミックス書き出し
         format: fmt,
         bitDepth: fmt === "mp3" ? 16 : 24,
@@ -1918,6 +2176,11 @@ async function renderAndLoad(autoplay) {
     state.audio.buffer = await ctx.decodeAudioData(arr);
     // 重ねどりレイヤーも編集があれば再レンダ（サーバー側キャッシュで無編集フレーズは軽い）
     for (const d of state.dubs) if (d.dirty) await renderDub(d);
+    // ハモリ声部も同様に、変更があったものだけ作り直す
+    for (const voice of harmonyVoices())
+      if (state.harmDirty[voice] || !state.harmBufs[voice]) await renderHarmonyVoice(voice);
+    for (const k of Object.keys(state.harmBufs))          // 消えた声部の音は捨てる
+      if (harmonyVoices().indexOf(Number(k)) < 0) delete state.harmBufs[k];
     if (seq !== renderSeq) return;
     state.dirty = false;
     els.play.disabled = false;
@@ -1948,6 +2211,8 @@ function playDur() {
 // 再生中・録音モニター中でも GainNode の値を書き換えて即反映する。
 
 function trackEnabled(key) {
+  if (typeof key === "string" && key[0] === "h" && key.length > 1)
+    return harmEnabled(Number(key.slice(1)));
   if (key === "main") return state.playMain;
   const d = state.dubs.find((x) => x.sessionId === key);
   return d ? d.enabled !== false : false;
@@ -2007,10 +2272,46 @@ function rebuildTrackButtons() {
     wrap.appendChild(x);
     els.tracks.appendChild(wrap);
   };
+  const mkHarm = (label, idx, voice) => {
+    const wrap = document.createElement("span");
+    wrap.className = "trackwrap";
+    const on = harmEnabled(voice);
+    const col = harmColorHex(idx);
+    const b = document.createElement("button");
+    b.className = "trackbtn " + (on ? "on" : "off");
+    b.textContent = (on ? "● " : "○ ") + label;
+    if (on) {
+      b.style.background = col; b.style.borderColor = col;
+      b.style.color = "#08211f"; b.style.fontWeight = "700";
+      b.style.boxShadow = "0 0 0 2px " + col + "44";
+    } else {
+      b.style.background = "transparent"; b.style.borderColor = col + "88";
+      b.style.color = col; b.style.opacity = "0.8";
+    }
+    b.title = (on ? "再生 ON（クリックで OFF）" : "再生 OFF（クリックで ON）") +
+      "。録音中のモニターにも反映";
+    b.addEventListener("click", () => {
+      state.harmEnabled[voice] = !harmEnabled(voice);
+      onTrackToggle("h" + voice);      // 再生中でも即座に効く（音量ノードで切替）
+    });
+    wrap.appendChild(b);
+    const x = document.createElement("button");
+    x.className = "trackx"; x.textContent = "×";
+    x.disabled = !!(state.rec && state.rec.active) || state.audio.playing;
+    x.title = label + " を削除（Cmd/Ctrl+Z で戻せます）";
+    x.addEventListener("click", (e) => { e.stopPropagation(); deleteHarmonyVoice(voice, label); });
+    wrap.appendChild(x);
+    els.tracks.appendChild(wrap);
+  };
+
   mk("録音1", 0, state.playMain, state.session.sessionId,
     () => { state.playMain = !state.playMain; onTrackToggle("main"); });
   state.dubs.forEach((d, i) => mk("録音" + (i + 2), i + 1, d.enabled !== false, d.sessionId,
     () => { d.enabled = d.enabled === false; onTrackToggle(d.sessionId); }));
+  // ハモリ声部。録音トラックとは色系統を変える（ティール系）。
+  // 録音トラックと違い、切り替えは再合成を伴う（ハモリは主トラックと一緒に
+  // 1本の音声として合成されるため、ゲインだけでは分離できない）。
+  harmonyVoices().forEach((voice, i) => mkHarm("ハモリ" + (i + 1), i, voice));
 }
 
 // トラック削除。サーバー側セッションはアンドゥ用に残す（曲を開き直すまで）。
@@ -2027,6 +2328,7 @@ function deleteTrack(sid) {
         return;
       }
       for (const n of d.notes) delete n.dub;       // 主トラックの印に付け替え
+      state.harmEnabled = {};                      // ハモリは元トラックに属するので引き継がない
       state.session = Object.assign({}, reg, { notes: d.notes });
       state.playMain = d.enabled !== false;
       state.audio.buffer = null;                   // 主バッファは作り直し
@@ -2041,6 +2343,7 @@ function deleteTrack(sid) {
       state.session = null;
       state.audio.buffer = null;
       state.playMain = true;
+      state.harmEnabled = {};
       els.play.disabled = els.stop.disabled = true;
       els.export.disabled = els.projsave.disabled = true;
       setZoomEnabled(false);
@@ -2085,6 +2388,7 @@ function playAudio() {
   };
   addTrack("main", a.buffer);
   for (const d of state.dubs) addTrack(d.sessionId, d.buffer);
+  for (const voice of harmonyVoices()) addTrack("h" + voice, state.harmBufs[voice]);
   if (!srcs.length) return;                       // 開始できるトラックがない
 
   // 伴奏（あれば）: 単一 AudioContext 上で同じ t0 基準に開始（AC-18）
@@ -2153,6 +2457,7 @@ function setTransportPlaying(playing) {
   // トラックの × の有効/無効を再生状態に追従させる
   // （再生中に作られたボタンが「無効のまま固定」される不具合の防止）
   rebuildTrackButtons();
+  syncHarmonyUI();
 }
 
 function applyMixGains() {
