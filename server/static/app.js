@@ -252,9 +252,10 @@ function viewRange() {
   return { lo, hi };
 }
 
+// session が null（音声を読み込む前）でも作れる。鍵盤とグリッドだけ先に見せるため。
 function makeView(session, width, height) {
   const { lo, hi } = viewRange();
-  const t0 = 0, t1 = Math.max(session.durationSec, 0.5);
+  const t0 = 0, t1 = Math.max(session ? session.durationSec : 8, 0.5);
   return PL.makeTransforms(t0, t1, lo, hi, width, height);
 }
 
@@ -286,13 +287,9 @@ function resizeCanvases() {
   syncVScroll();
 }
 
+// 音声を読み込む前でも、鍵盤と音程グリッドは描いておく（何をする画面か分かるように）。
+// ノート・F0曲線・伴奏だけがセッション依存で、それらは renderScene 側で除かれる。
 function draw() {
-  if (!state.session) {
-    // 空状態（全トラック削除後など）: キャンバスを消す
-    clearCanvas(els.grid); clearCanvas(els.keys);
-    updatePlayheadStatic();
-    return;
-  }
   const { contentW, contentH } = layout();
   state.view = makeView(state.session, contentW, contentH);
   const ctx = clearCanvas(els.grid);
@@ -300,7 +297,7 @@ function draw() {
   renderScene(ctx, state.view, null);
   drawKeys();
   syncVScroll();
-  if (state.backing) drawBacking();
+  if (state.session && state.backing) drawBacking();
   updatePlayheadStatic();   // ズーム/スクロール後も再生ヘッドを正しい位置へ
 }
 
@@ -433,7 +430,7 @@ function renderScene(ctx, v, skip) {
   ctx.lineWidth = 1;
 
   // フレーズ境界（無音での分割点・10.4）を薄いシアンの破線で示す
-  const bounds = state.session.phraseBounds || [];
+  const bounds = (state.session && state.session.phraseBounds) || [];
   if (bounds.length) {
     ctx.strokeStyle = "rgba(79,183,176,0.55)"; ctx.setLineDash([6, 4]);
     for (const tb of bounds) {
@@ -444,6 +441,7 @@ function renderScene(ctx, v, skip) {
     ctx.setLineDash([]);
   }
 
+  if (!state.session) return;          // ここから先は音声があるときだけ
   drawHarmonyGuides(ctx, v, vis);
   drawF0Curve(ctx, v, vis);
   for (const note of allNotes()) {
@@ -689,7 +687,8 @@ els.keys.addEventListener("mouseleave", () => {
 });
 
 els.keys.addEventListener("mousedown", (e) => {
-  if (e.button !== 0 || !state.session || !state.view) return;
+  // 音声を読み込む前でも鳴らせる（歌い出しの音を確かめる用途）
+  if (e.button !== 0 || !state.view) return;
   e.preventDefault();
   const m = keyMidiFromEvent(e);
   if (m == null) return;
@@ -2712,4 +2711,22 @@ let _guideInit = true;
 try { _guideInit = localStorage.getItem(GUIDE_KEY) !== "0"; } catch (_) { /* 既定のまま */ }
 setGuideVisible(_guideInit);
 
-window.addEventListener("resize", () => { resizeCanvases(); draw(); _followScrollLeft = -1; });
+// --- 初期表示 -------------------------------------------------------------
+// 音声を読み込む前でも鍵盤と音程グリッドを見せる。表示は 2 オクターブぶんを
+// C4 中心に。音声を読み込むと fitViewToNotes() が収録音域に合わせ直す。
+const INITIAL_VISIBLE_SEMITONES = 24;
+function initEmptyView() {
+  const gw = gridwrap();
+  const viewH = gw.clientHeight;
+  if (viewH > 0) state.pxPerSemi = Math.min(MAX_PX_PER_SEMI, viewH / INITIAL_VISIBLE_SEMITONES);
+  resizeCanvases(); draw();
+  const y = state.view.centsToY(6000);          // C4 を画面中央へ
+  gw.scrollTop = Math.max(0, Math.min(state.view.height - viewH, y - viewH / 2));
+  syncVScroll(); draw();
+}
+initEmptyView();
+
+window.addEventListener("resize", () => {
+  if (!state.session) { initEmptyView(); return; }   // 空のうちは初期表示を作り直す
+  resizeCanvases(); draw(); _followScrollLeft = -1;
+});
