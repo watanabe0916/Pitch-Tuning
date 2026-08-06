@@ -33,7 +33,7 @@ from pitch.render import render_output, mix_vocal_backing, \
     apply_noise_gate, \
     render_f0, synthesize, render_gain
 from pitch.schema import (notes_to_json, notes_from_json, f32_to_b64,
-                          note_to_dict, note_from_dict, segment_from_dict)
+                        note_to_dict, note_from_dict, segment_from_dict)
 
 import copy
 import hashlib
@@ -81,7 +81,7 @@ SESSIONS: dict[str, Session] = {}
 
 @app.post("/api/session")
 async def create_session(audio: UploadFile = File(...),
-                         sampleRate: int = Form(None)):
+                        sampleRate: int = Form(None)):
     raw = await audio.read()
     try:
         la = load_audio_fileobj(io.BytesIO(raw), audio.filename or "")
@@ -101,7 +101,7 @@ async def create_session(audio: UploadFile = File(...),
         a = analyze(np.ascontiguousarray(x[lo:hi]), sr)   # フレーズ単位で解析
         start_sec = lo / sr
         phrases.append(Phrase(analysis=a, start_sample=lo, n_samples=hi - lo,
-                              samples=np.asarray(x[lo:hi], dtype=np.float32)))
+                            samples=np.asarray(x[lo:hi], dtype=np.float32)))
         # ノートをグローバル時間へオフセットして集約
         for note in segment_notes(a):
             for s in note.segments:
@@ -192,7 +192,7 @@ def _pitch_edited_spans(notes) -> list:
                 tout = ((segs[i + 1].transition_in_ms or 40.0) / 1000.0
                         if i + 1 < len(segs) else 0.04)
                 spans.append((s.start_sec - tin / 2 - 0.012,
-                              s.end_sec + tout / 2 + 0.012))
+                            s.end_sec + tout / 2 + 0.012))
     return spans
 
 
@@ -221,7 +221,7 @@ def _render_phrase(ph: Phrase, local) -> np.ndarray:
     ボコーダー（WORLD）の質感変化を、実際にピッチ編集した区間だけに限定する:
     - ピッチ編集なし（音量/ミュートのみ）→ 原音にゲイン包絡を掛けるだけ
     - ピッチ編集あり → 全区間を一括合成（P2）した上で、編集区間＋遷移だけを
-      合成音、他は原音とする包絡ブレンド。ゲート端では両者の音高が一致する。
+    合成音、他は原音とする包絡ブレンド。ゲート端では両者の音高が一致する。
     """
     orig = ph.samples
     if orig is None:                                   # 原音未保持（旧セッション）
@@ -331,7 +331,7 @@ def render(req: RenderRequest):
 
     buf = io.BytesIO()
     sf.write(buf, y.astype(np.float32), sess.sample_rate,
-             format="WAV", subtype="FLOAT")   # 書き出し既定(32bit float)と一致させる
+            format="WAV", subtype="FLOAT")   # 書き出し既定(32bit float)と一致させる
     return Response(content=buf.getvalue(), media_type="audio/wav")
 
 
@@ -460,7 +460,7 @@ async def upload_backing(sessionId: str = Form(...), audio: UploadFile = File(..
 
     dur = data.shape[0] / sr
     sess.backing = Backing(pcm=np.ascontiguousarray(data), sample_rate=sr,
-                           duration_sec=dur, channels=2)
+                        duration_sec=dur, channels=2)
     return {
         "backingId": sessionId,          # セッションに1本（キーはセッションID）
         "sampleRate": sr,

@@ -72,17 +72,17 @@ def plot_analysis(
                         color="tab:blue", lw=3,
                         label="segment baseCents" if seg_idx == 0 else None)
             ax_p.axvline(seg.start_sec, color="tab:red", lw=0.8,
-                         ls="--", alpha=0.7)
+                        ls="--", alpha=0.7)
             ax_p.text(seg.start_sec, seg.base_cents + 25,
-                      _cents_to_note_name(seg.base_cents),
-                      fontsize=8, color="tab:blue")
+                    _cents_to_note_name(seg.base_cents),
+                    fontsize=8, color="tab:blue")
             seg_idx += 1
         # ノート終端も引く
         ax_p.axvline(note.end_sec, color="tab:red", lw=0.8, ls="--", alpha=0.7)
 
     ax_p.set_ylabel("pitch [cents] (A4=6900)")
     ax_p.set_title(f"{title}\nnotes={len(notes)}, "
-                   f"segments={sum(len(n.segments) for n in notes)}")
+                f"segments={sum(len(n.segments) for n in notes)}")
     ax_p.legend(loc="upper right", fontsize=9)
     ax_p.grid(True, alpha=0.2)
 
@@ -106,7 +106,7 @@ def _shade_unvoiced(ax, times, voiced, hop_sec):
     """無声フレーム区間を薄グレーで塗る。"""
     for lo, hi in _false_runs(voiced):
         ax.axvspan(times[lo], times[min(hi, len(times) - 1)] + hop_sec,
-                   color="0.85", alpha=0.5, lw=0)
+                color="0.85", alpha=0.5, lw=0)
 
 
 def _false_runs(mask: np.ndarray):

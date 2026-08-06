@@ -211,13 +211,13 @@ def render_f0(analysis: Analysis, notes) -> np.ndarray:
 
     # center は base+offset を smoothstep 補間。
     center = build_frame_curve(times, center_vals, starts, ends,
-                               pitch_trans, connected, mode="smoothstep")
+                            pitch_trans, connected, mode="smoothstep")
     # base も同じ smoothstep で補間する。こうすると residual = f0-base が
     # 境界で連続になり、strength<1 でもピッチが折れない（3.4 対策）。
     base = build_frame_curve(times, base_vals, starts, ends,
-                             pitch_trans, connected, mode="smoothstep")
+                            pitch_trans, connected, mode="smoothstep")
     strength = build_frame_curve(times, strength_vals, starts, ends,
-                                 pitch_trans, connected, mode="linear")
+                                pitch_trans, connected, mode="linear")
     vib = build_frame_curve(times, vib_vals, starts, ends,
                             pitch_trans, connected, mode="linear")
 
@@ -264,7 +264,7 @@ def render_gain(analysis: Analysis, notes, num_samples: int) -> np.ndarray:
 
     # 1) フレーム単位の dB 曲線（dB 領域で smoothstep）
     gain_db_frame = build_frame_curve(times, gain_vals, starts, ends,
-                                      gain_trans, connected, mode="smoothstep")
+                                    gain_trans, connected, mode="smoothstep")
 
     # 2) フレーム → サンプルへ線形補間（dB のまま）
     sample_times = np.arange(num_samples, dtype=np.float64) / sr
@@ -334,8 +334,8 @@ REVERB_WET_AT_FULL = 0.6      # mix=1.0 のときの wet ゲイン（送り量�
 
 @lru_cache(maxsize=8)
 def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
-                   predelay_sec: float = REVERB_PREDELAY_SEC,
-                   damping: float = REVERB_DAMPING) -> np.ndarray:
+                predelay_sec: float = REVERB_PREDELAY_SEC,
+                damping: float = REVERB_DAMPING) -> np.ndarray:
     """合成インパルス応答（アルゴリズミック・リバーブ相当）。
 
     単純な「指数減衰させた白色雑音」は、密度は出るが**部屋には聴こえない**。
@@ -343,12 +343,12 @@ def make_reverb_ir(sample_rate: int, decay_sec: float = 1.2,
     実際の部屋の応答に近づけるため、次の4点を入れている。
 
     1. **プリディレイ**: 直接音のあとに残響が来る。これがないと直接音と混ざり、
-       輪郭が溶けて籠って聴こえる。
+        輪郭が溶けて籠って聴こえる。
     2. **初期反射**: 拡散した尾の前に、まばらな反射音を数個置く。部屋の広さの手がかり。
     3. **周波数別の減衰**: 高域ほど速く減衰させる（壁と空気による吸収）。
-       全帯域が同じ長さで残ると金属的・人工的になる。
+        全帯域が同じ長さで残ると金属的・人工的になる。
     4. **低域を落とす**: 声の基音帯（〜200Hz）に長い残響が付くと確実に濁る。
-       残響側だけハイパスするのは、ボーカルのミックスでは定石。
+        残響側だけハイパスするのは、ボーカルのミックスでは定石。
 
     決定的にするため固定シードを使う（プレビューと書き出しで同一結果・AC-16）。
     """
@@ -416,7 +416,7 @@ DELAY_MOD_RATES_HZ = (0.47, 0.31)   # 揺らぎの速さ（無関係な2つを�
 
 
 def _delay_tap(x: np.ndarray, sample_rate: int, delay_samples: float,
-               depth_samples: float = 0.0) -> np.ndarray:
+            depth_samples: float = 0.0) -> np.ndarray:
     """遅延を1つ取り出す。depth>0 なら遅延時間をゆっくり揺らす（小数遅延・線形補間）。
 
     短い固定遅延を原音に足すと、周波数軸に等間隔の谷ができる（コムフィルタ）。
@@ -461,12 +461,12 @@ def apply_noise_gate(x: np.ndarray, sample_rate: int, gate: dict) -> np.ndarray:
     レベルを下げる**ことで、マスターを上げてもノイズが付いてこないようにする。
 
     - 閾値は素材から自動推定する（下位パーセンタイル＝ノイズフロア）。
-      録音環境ごとにノイズの絶対値は違うので、固定値では使い物にならない。
+        録音環境ごとにノイズの絶対値は違うので、固定値では使い物にならない。
     - 声を削らないよう、閾値はピークから十分下に制限する。
     - ゲイン曲線は 30ms 幅で平滑化してから掛ける。急に開閉するとブツッと鳴り、
-      息継ぎの前後が不自然に途切れる（3.6 のゲイン連続性と同じ理由）。
+        息継ぎの前後が不自然に途切れる（3.6 のゲイン連続性と同じ理由）。
     - **空間系より前**に置く。後ろに置くとノイズにリバーブ/ディレイが掛かり、
-      かえって目立つ。
+        かえって目立つ。
     """
     if not gate or not len(x):
         return x
@@ -508,8 +508,8 @@ def apply_delay(x: np.ndarray, sample_rate: int, delay: dict) -> np.ndarray:
     - **timeMs**   : 音が返ってくるまでの時間。
     - **feedback** : 繰り返しの減衰。0 = 1回だけ、大きいほど長く尾を引く。
     - **mix**      : 原音とディレイ音のバランス。0 = 原音のみ、1 = ディレイ音のみ。
-                     等power（dry=cos, wet=sin）で混ぜるので、動かしても
-                     全体の音量感が痩せない。
+                    等power（dry=cos, wet=sin）で混ぜるので、動かしても
+                    全体の音量感が痩せない。
 
     短い遅延ほど、遅延時間をごくゆっくり揺らして重ねる（コムフィルタによる金属的な
     色付きを散らすため。実機のダブラーと同じ考え方）。効きは 40ms 以下で最大、
@@ -591,7 +591,7 @@ def apply_reverb(x: np.ndarray, sample_rate: int, reverb: dict) -> np.ndarray:
 
 
 def render_gate_envelope(analysis: Analysis, notes, num_samples: int,
-                         edge_sec: float = 0.008) -> np.ndarray:
+                    edge_sec: float = 0.008) -> np.ndarray:
     """セグメントの占める区間だけ 1、区間外は 0 のゲート包絡（端は smoothstep）。
 
     ハモリ等の副ボイスは、コピー元の区間だけを鳴らし他は無音にするために使う。
@@ -614,8 +614,8 @@ def render_gate_envelope(analysis: Analysis, notes, num_samples: int,
 
 
 def render_output(analysis: Analysis, notes, master_gain_db: float = 0.0,
-                  reverb: dict = None, gate: bool = False,
-                  delay: dict = None) -> np.ndarray:
+                reverb: dict = None, gate: bool = False,
+                delay: dict = None) -> np.ndarray:
     """編集後のボーカル波形を生成する（信号チェーン 4.2、リミッター前まで）。
 
     renderF0 → synthesize → renderGain（★空間系の前段）→ [gate] → ディレイ → リバーブ → マスターゲイン。
@@ -715,8 +715,8 @@ def normalize_true_peak(x: np.ndarray, ceiling_dbtp: float = DEFAULT_CEILING_DBT
 
 
 def mix_vocal_backing(vocal: np.ndarray, backing: np.ndarray, offset_sec: float,
-                      sample_rate: int, backing_gain_db: float = 0.0,
-                      backing_mute: bool = False) -> np.ndarray:
+                    sample_rate: int, backing_gain_db: float = 0.0,
+                    backing_mute: bool = False) -> np.ndarray:
     """モノラルのボーカルとステレオ伴奏を加算してステレオを返す（13.2）。
 
     ボーカルはセンター配置（L=R）。伴奏は offset_sec だけずらして重ねる。
@@ -746,9 +746,9 @@ def mix_vocal_backing(vocal: np.ndarray, backing: np.ndarray, offset_sec: float,
 
 
 def render_master(analysis: Analysis, notes, master_gain_db: float = 0.0,
-                  reverb: dict = None,
-                  ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
-                  normalize: bool = False) -> np.ndarray:
+                reverb: dict = None,
+                ceiling_dbtp: float = DEFAULT_CEILING_DBTP,
+                normalize: bool = False) -> np.ndarray:
     """出力段まで通した最終ボーカル波形。**プレビューと書き出しで共有する**。
 
     render_output（gain→リバーブ→master）→ トゥルーピーク処理（リミッター/正規化）。

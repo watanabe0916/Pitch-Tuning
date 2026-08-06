@@ -73,4 +73,4 @@ def _to_mono(data: np.ndarray, sr: int) -> LoadedAudio:
     # data: shape=(N, channels) — モノラルへミックスダウン（10.1）
     mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
     return LoadedAudio(samples=np.ascontiguousarray(mono, dtype=np.float32),
-                       sample_rate=int(sr))
+                    sample_rate=int(sr))

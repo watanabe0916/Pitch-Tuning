@@ -26,8 +26,8 @@ def _frame_rms_db(samples: np.ndarray, sr: int, hop: int, win: int) -> np.ndarra
 
 
 def detect_phrases(samples: np.ndarray, sr: int, *,
-                   thresh_db: float = -50.0,
-                   min_silence_sec: float = 0.15) -> list:
+                thresh_db: float = -50.0,
+                min_silence_sec: float = 0.15) -> list:
     """無音区間の中央でのみ分割したフレーズ範囲 [(start_sample, end_sample), ...] を返す。
 
     条件を満たす無音がなければ全体を1フレーズとして返す（[(0, N)]）。
