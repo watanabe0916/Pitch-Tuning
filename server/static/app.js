@@ -129,6 +129,10 @@ const setStatus = (msg) => { els.status.textContent = msg; };
 // 内容（スクロール範囲）の 1辺の上限。canvas ではなく空の div のサイズなので、
 // 大きくしてもメモリはほぼ食わない（canvas は常に表示領域ぶんだけ確保する）。
 const MAX_CONTENT_PX = 200000;
+// 音声の末尾より右に確保する余白。これがないと、短い録音では横スクロールできず、
+// 画面右側にあるバーを鍵盤の近くへ持ってこられない（音程が読み取りにくい）。
+// 「どの時刻でも鍵盤から RIGHT_KEEP_PX まで近づけられる」ぶんだけ用意する。
+const RIGHT_KEEP_PX = 160;
 
 const gridwrap = () => els.grid.parentElement;
 const keyswrap = () => els.keys.parentElement;
@@ -139,15 +143,19 @@ const keyswrap = () => els.keys.parentElement;
 function layout() {
   const gw = gridwrap();
   const viewH = gw.clientHeight, viewW = gw.clientWidth;
-  const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 1;
-  const contentW = Math.round(Math.min(MAX_CONTENT_PX, Math.max(viewW, dur * state.pxPerSec)));
+  const dur = state.session ? Math.max(state.session.durationSec, 0.5) : 8;
+  // timeW = 音声が占める幅（時間軸の対応はこれで決まる）
+  // contentW = スクロール範囲（timeW + 右の余白）
+  const timeW = Math.round(Math.min(MAX_CONTENT_PX, Math.max(viewW, dur * state.pxPerSec)));
+  const padRight = Math.max(0, viewW - RIGHT_KEEP_PX);
+  const contentW = Math.min(MAX_CONTENT_PX, timeW + padRight);
 
   const { lo, hi } = viewRange();
   const semis = Math.max(1, (hi - lo) / 100);
   const fitPx = viewH / semis;                       // 全音域が収まる 1半音あたりの高さ
   const per = Math.max(fitPx, state.pxPerSemi || 0); // 収まりきる高さより小さくはしない
   const contentH = Math.round(Math.min(MAX_CONTENT_PX, Math.max(viewH, semis * per)));
-  return { contentW, contentH, viewW, viewH, fitPx, semis, dur };
+  return { contentW, timeW, contentH, viewW, viewH, fitPx, semis, dur };
 }
 
 // スクロール範囲を作る空の div（canvas の代わりに「内容の大きさ」を持つ役）。
@@ -290,8 +298,8 @@ function resizeCanvases() {
 // 音声を読み込む前でも、鍵盤と音程グリッドは描いておく（何をする画面か分かるように）。
 // ノート・F0曲線・伴奏だけがセッション依存で、それらは renderScene 側で除かれる。
 function draw() {
-  const { contentW, contentH } = layout();
-  state.view = makeView(state.session, contentW, contentH);
+  const { timeW, contentH } = layout();
+  state.view = makeView(state.session, timeW, contentH);
   const ctx = clearCanvas(els.grid);
   applyViewTransform(ctx);          // 以降は内容座標のまま描ける
   renderScene(ctx, state.view, null);
@@ -1541,18 +1549,18 @@ function zoomBy(factor) {
   const gw = gridwrap();
   const before = layout();
   const viewW = before.viewW;
-  const centerRatio = (gw.scrollLeft + viewW / 2) / before.contentW;
+  const centerRatio = (gw.scrollLeft + viewW / 2) / before.timeW;
   // 下限は「全体が画面に収まる幅」。それ以上縮めても見た目が変わらないので、
   // 押し続けても状態だけが際限なく小さくなる（＝拡大に戻すのに何度も押す）のを防ぐ。
   const fitSec = viewW / before.dur;
   state.pxPerSec = Math.max(fitSec, Math.min(MAX_PX_PER_SEC, state.pxPerSec * factor));
   resizeCanvases(); draw();
   const after = layout();
-  gw.scrollLeft = Math.max(0, Math.min(after.contentW - viewW, centerRatio * after.contentW - viewW / 2));
+  gw.scrollLeft = Math.max(0, Math.min(after.contentW - viewW, centerRatio * after.timeW - viewW / 2));
   _followScrollLeft = -1;   // 内容幅が変わると scrollLeft も動くので、追従の基準を取り直す
   // 実際に適用された値で状態を上書きし、そのまま表示する
   // （canvas の上限で頭打ちになったことが分かり、次の縮小もすぐ効く）。
-  const eff = after.contentW / after.dur;
+  const eff = after.timeW / after.dur;
   const capped = eff < state.pxPerSec * 0.99;
   state.pxPerSec = eff;
   setStatus(`横ズーム ${eff.toFixed(eff < 100 ? 1 : 0)}px/秒` + (capped ? "（上限）" : ""));
@@ -1834,7 +1842,8 @@ function drawBacking() {
   const wrap = els.bcanvas.parentElement;
   const ch = wrap.clientHeight, vw = wrap.clientWidth;
   // グリッドと同じ方式: スクロール範囲は spacer が作り、canvas は見えている幅だけ持つ。
-  els.bspace.style.width = v.width + "px"; els.bspace.style.height = ch + "px";
+  // 伴奏レーンのスクロール範囲はグリッドと同じにする（右の余白ぶんも含める）
+  els.bspace.style.width = layout().contentW + "px"; els.bspace.style.height = ch + "px";
   els.bcanvas.style.width = vw + "px"; els.bcanvas.style.height = ch + "px";
   els.bcanvas.width = Math.round(vw * dpr); els.bcanvas.height = Math.round(ch * dpr);
   els.bcanvas.style.transform = `translateX(${wrap.scrollLeft}px)`;
