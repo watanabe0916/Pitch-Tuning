@@ -29,6 +29,9 @@ const state = {
   harmEnabled: {},                       // ハモリ声部の再生 ON/OFF（voice → bool）
   harmBufs: {},                          // ハモリ声部ごとの音声（voice → AudioBuffer）
   harmDirty: {},                         // 再合成が必要な voice
+  keyPress: null,                        // 鍵盤で押している MIDI ノート番号（描画用）
+  keyDown: false,
+  keyHover: null,                        // カーソルが乗っている鍵盤（描画用）
   pxPerSec: 260,        // 横ズーム率
   pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
@@ -392,14 +395,17 @@ function renderScene(ctx, v, skip) {
   // 半音行の背景（黒鍵行を薄く）
   const rowLo = Math.max(v.cLo, Math.floor((cBot - 100) / 100) * 100);
   const rowHi = Math.min(v.cHi, Math.ceil((cTop + 100) / 100) * 100);
+  // 1行 = その音程を中心とする ±50cent。音程バーも同じ音程を中心に描くので、
+  // バーは必ず自分の行のど真ん中に来る（行を [c, c+100] にすると半音ぶんずれる）。
   for (let c = rowLo; c <= rowHi; c += 100) {
     const midi = Math.round(c / 100);
-    const y = v.centsToY(c + 50);
+    const y = v.centsToY(c);
     const h = v.rowHeightPx;
     ctx.fillStyle = isBlackKey(midi) ? "#14100b" : "#1a1510";
     ctx.fillRect(x0, y - h / 2, x1 - x0, h);
     ctx.strokeStyle = "#2a2115";
-    ctx.beginPath(); ctx.moveTo(x0, v.centsToY(c)); ctx.lineTo(x1, v.centsToY(c)); ctx.stroke();
+    const yb = v.centsToY(c - 50);                  // 行の境界（隣の音程との中間）
+    ctx.beginPath(); ctx.moveTo(x0, yb); ctx.lineTo(x1, yb); ctx.stroke();
   }
 
   // 時間グリッド = BPM と拍子による拍線・小節線。
@@ -594,16 +600,113 @@ function drawKeys() {
   const rowHi = Math.min(v.cHi, Math.ceil((cTop + 100) / 100) * 100);
   for (let c = rowLo; c <= rowHi; c += 100) {
     const midi = Math.round(c / 100);
-    const y = v.centsToY(c + 50), h = v.rowHeightPx;
-    ctx.fillStyle = isBlackKey(midi) ? "#120f0a" : "#ede6d8";
+    const y = v.centsToY(c), h = v.rowHeightPx;     // 行の中心 = その音程
+    const pressed = state.keyPress === midi;
+    const black = isBlackKey(midi);
+    ctx.fillStyle = pressed ? "#e8a23d" : (black ? "#120f0a" : "#ede6d8");
     ctx.fillRect(0, y - h / 2, w, h);
+    // カーソルが乗っている鍵盤を軽く光らせる（押す前にどこが鳴るか分かるように）
+    if (!pressed && state.keyHover === midi) {
+      ctx.fillStyle = black ? "rgba(232,162,61,0.34)" : "rgba(232,162,61,0.28)";
+      ctx.fillRect(0, y - h / 2, w, h);
+    }
     ctx.strokeStyle = "#3a3226"; ctx.strokeRect(0, y - h / 2, w, h);
-    if (!isBlackKey(midi)) {
+    if (!black) {
       ctx.fillStyle = "#6b6153"; ctx.font = "9px ui-monospace, 'SF Mono', 'Roboto Mono', monospace";
       ctx.fillText(centsToName(c), 4, y + 3);
     }
   }
 }
+
+// ==========================================================================
+// 鍵盤の発音（音程確認用）
+// ==========================================================================
+// 押している間だけ鳴らす。倍音を少し重ねてピアノに寄せるが、目的は音程の確認
+// なので、基音がはっきり聴き取れる構成にしてある。
+// 出力段（マスター/リバーブ等）は通さない。編集対象の音ではなく参照音のため。
+const KEY_PARTIALS = [[1, 1.0], [2, 0.42], [3, 0.22], [4, 0.12], [5, 0.06], [6, 0.03]];
+const KEY_PEAK = 0.18;          // アタックのピーク（他の音を邪魔しない程度）
+const KEY_SUSTAIN = 0.085;      // 押しっぱなしのときの保持レベル
+const KEY_RELEASE_SEC = 0.18;
+let _keyTone = null;            // { oscs, gain, midi }
+
+function keyMidiFromEvent(e) {
+  if (!state.view) return null;
+  const r = keyswrap().getBoundingClientRect();
+  const y = e.clientY - r.top + gridwrap().scrollTop;   // 鍵盤は縦スクロールに追従
+  const midi = Math.round(state.view.yToCents(y) / 100);
+  const lo = Math.round(state.view.cLo / 100), hi = Math.round(state.view.cHi / 100);
+  return (midi < lo || midi > hi) ? null : midi;
+}
+
+function startKeyTone(midi) {
+  const ctx = ensureAudioCtx();
+  if (ctx.state === "suspended") ctx.resume();
+  stopKeyTone(0.02);                       // 直前の音は素早く消す（鍵盤をなぞる操作）
+  const t = ctx.currentTime;
+  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);        // 0 から始めてクリックを出さない
+  g.gain.exponentialRampToValueAtTime(KEY_PEAK, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(KEY_SUSTAIN, t + 0.35);   // 減衰して保持へ
+  g.connect(ctx.destination);
+  const oscs = [];
+  for (const [n, amp] of KEY_PARTIALS) {
+    const o = ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(freq * n, t);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(amp, t);
+    o.connect(og); og.connect(g);
+    o.start(t);
+    oscs.push(o);
+  }
+  _keyTone = { oscs, gain: g, midi };
+  state.keyPress = midi;
+  drawKeys();
+}
+
+function stopKeyTone(releaseSec) {
+  if (!_keyTone) return;
+  const ctx = state.audio.ctx;
+  const t = ctx.currentTime, R = releaseSec == null ? KEY_RELEASE_SEC : releaseSec;
+  const g = _keyTone.gain;
+  g.gain.cancelScheduledValues(t);
+  g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + R);
+  for (const o of _keyTone.oscs) o.stop(t + R + 0.02);
+  _keyTone = null;
+  state.keyPress = null;
+  drawKeys();
+}
+
+els.keys.addEventListener("mousemove", (e) => {
+  const m = keyMidiFromEvent(e);
+  if (m !== state.keyHover) { state.keyHover = m; drawKeys(); }
+});
+els.keys.addEventListener("mouseleave", () => {
+  if (state.keyHover !== null) { state.keyHover = null; drawKeys(); }
+});
+
+els.keys.addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || !state.session || !state.view) return;
+  e.preventDefault();
+  const m = keyMidiFromEvent(e);
+  if (m == null) return;
+  state.keyDown = true;
+  startKeyTone(m);
+});
+// 押したまま上下になぞると、そのまま鍵盤を弾き替える
+window.addEventListener("mousemove", (e) => {
+  if (!state.keyDown) return;
+  const m = keyMidiFromEvent(e);
+  if (m != null && _keyTone && m !== _keyTone.midi) startKeyTone(m);
+});
+window.addEventListener("mouseup", () => {
+  if (!state.keyDown) return;
+  state.keyDown = false;
+  stopKeyTone();
+});
 
 // ==========================================================================
 // 編集操作（分割/結合/遷移区間/音高/音量）

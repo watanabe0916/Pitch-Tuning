@@ -197,7 +197,7 @@ input[type=range]:disabled::-moz-range-thumb { background: var(--ink-faint); bor
 .keyswrap { flex: 0 0 56px; position: relative; background: var(--bg-1); z-index: 2;
   border-right: 1px solid var(--line); overflow: hidden; }
 /* 鍵盤 canvas は表示領域ぶんだけ確保し、描画時に縦スクロール量だけずらして描く。 */
-.keyswrap canvas { position: absolute; top: 0; left: 0; width: 100%; display: block; }
+.keyswrap canvas { position: absolute; top: 0; left: 0; width: 100%; display: block; cursor: pointer; }
 /* グリッドは縦横スクロール可能なコンテナ。
    #gridspace が内容サイズ（＝スクロール範囲）を作り、canvas は「見えている範囲ぶん」だけを
    持って transform でスクロール位置に貼り付く。こうしないと拡大時に canvas が巨大化して
