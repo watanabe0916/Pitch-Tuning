@@ -4,7 +4,19 @@
       "Bash(python3 -)",
       "Bash(node --check static/app.js)",
       "Bash(node tests/test_pitchlogic.js)",
-      "Bash(../.venv/bin/python -m pytest tests/ -q)"
+      "Bash(../.venv/bin/python -m pytest tests/ -q)",
+      "Bash(cd /Users/w.kout/Desktop/Pitch-Tuning/server/static && sed -n '/^function deleteTrack/,/^}/p' app.js)",
+      "Bash(sed -n '/^function commitEdit/,/^}/p' app.js)",
+      "Bash(sed -n '/^async function renderAndLoad/,/^}/p' app.js)",
+      "Bash(sed -n '/^function stopRecording/,/^}/p' app.js)",
+      "Bash(sed -n '/^async function createDubFromRecording/,/^}/p' app.js)",
+      "Bash(node deletebug.js)",
+      "Bash(nohup ./start.command)",
+      "Bash(curl -s -o /dev/null -w \"server: HTTP %{http_code}\\\\n\" http://localhost:8000/)",
+      "Bash(curl -s http://localhost:8000/static/app.js)"
+    ],
+    "additionalDirectories": [
+      "/Users/w.kout/Desktop/Pitch-Tuning/server/static"
     ]
   }
 }

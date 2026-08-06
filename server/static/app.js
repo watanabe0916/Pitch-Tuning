@@ -1655,7 +1655,8 @@ async function startRecording() {
     let monitorT0 = 0;
     const monGains = {};
     const monBufs = [];
-    if (state.playMain && state.audio.buffer) monBufs.push(["main", state.audio.buffer]);
+    if (state.session && state.playMain && state.audio.buffer)
+      monBufs.push(["main", state.audio.buffer]);
     for (const d of state.dubs)
       if (d.enabled !== false && d.buffer) monBufs.push([d.sessionId, d.buffer]);
     const bbuf = state.backing && !state.backing.mute && state.backing.buffer;
@@ -1788,7 +1789,9 @@ async function renderDub(d) {
     body: JSON.stringify({ sessionId: d.sessionId, editState: buildDubEditState(d), mode: "preview" }),
   });
   if (!res.ok) throw new Error(await res.text());
-  d.buffer = await ensureAudioCtx().decodeAudioData(await res.arrayBuffer());
+  const buf = await ensureAudioCtx().decodeAudioData(await res.arrayBuffer());
+  if (!state.dubs.includes(d)) return;   // レンダ中に削除されたトラックには書き戻さない
+  d.buffer = buf;
   d.dirty = false;
 }
 
@@ -1890,8 +1893,15 @@ els.export.addEventListener("click", exportAudio);
 
 let renderSeq = 0;
 async function renderAndLoad(autoplay) {
-  if (!state.session) return;
+  // seq は「セッションが無い」場合でも必ず進める。ここを早期 return すると、
+  // 直前に投げたレンダ（＝いま削除したトラックの音）が古い扱いにならず、
+  // 完了時に state.audio.buffer へ書き戻されてしまう（削除したはずの音が鳴る原因）。
   const seq = ++renderSeq;
+  if (!state.session) {
+    state.audio.buffer = null;
+    els.play.disabled = true;
+    return;
+  }
   setStatus("再合成中…");
   try {
     const res = await fetch("/api/render", {
@@ -2047,7 +2057,7 @@ function deleteTrack(sid) {
 
 function playAudio() {
   const a = state.audio;
-  if (!a.buffer) return;
+  if (!state.session || !a.buffer) return;   // 空の状態では鳴らさない
   stopAudio(true);   // 位置は保持したまま停止
   const ctx = ensureAudioCtx();
   const t0 = ctx.currentTime + 0.1;   // 100ms ルックアヘッド（12.2）
