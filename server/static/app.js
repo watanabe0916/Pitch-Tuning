@@ -32,6 +32,7 @@ const state = {
   keyPress: null,                        // 鍵盤で押している MIDI ノート番号（描画用）
   keyDown: false,
   keyHover: null,                        // カーソルが乗っている鍵盤（描画用）
+  trackSelectable: {},                   // トラックごとの選択可否（キーは trackEnabled と同じ）
   pxPerSec: 260,        // 横ズーム率
   pxPerSemi: null,      // 縦ズーム率（1半音あたりの高さ px）。null = 全音域を画面に収める
   mouse: { clientX: 0, clientY: 0 },
@@ -524,6 +525,13 @@ function dubColorOf(note) {
 
 // 1 セグメント分の描画（塗り高さ・RMS背景・枠・遷移帯）。
 function drawOneSegment(ctx, v, note, s, i) {
+  // 選択できないトラックは全体を暗くして、掴めないことを見た目で示す
+  const dim = !noteSelectable(note);
+  if (dim) { ctx.save(); ctx.globalAlpha = 0.34; }
+  drawOneSegmentInner(ctx, v, note, s, i);
+  if (dim) ctx.restore();
+}
+function drawOneSegmentInner(ctx, v, note, s, i) {
   const h = Math.max(10, v.rowHeightPx * 0.9);
   const dubOf = note.dub ? state.dubs.find((dd) => dd.sessionId === note.dub) : null;
   const rms = dubOf ? dubOf.rmsDb : state.session.rmsDb;
@@ -744,7 +752,7 @@ function hitTest(px, t, cents) {
   const within = (s) => cents == null ||
     Math.abs((s.baseCents + s.pitchOffsetCents) - cents) <= halfCents;
 
-  const notes = allNotes();
+  const notes = selectableNotes();
   for (const note of notes) {
     for (let i = 1; i < note.segments.length; i++) {
       const s = note.segments[i], p = note.segments[i - 1];
@@ -1195,7 +1203,7 @@ function endDrag() {
     const v = state.view;
     if (d.moved) {
       const sel = PL.segmentsInRect(
-        allNotes(), v.xToTime(d.x0), v.xToTime(d.x1),
+        selectableNotes(), v.xToTime(d.x0), v.xToTime(d.x1),
         v.yToCents(d.y0), v.yToCents(d.y1));
       setSelection(sel);
       setStatus(sel.length + " ノートのバーを選択");
@@ -1314,6 +1322,20 @@ function normalizeDelay(d) {
 // ==========================================================================
 // 判定材料は「音源1（主トラック）の主ボイス」のセグメント。
 // ハモリ声部や重ねどりを混ぜると、それ自体がキーを歪めるため使わない。
+// ノートがどのトラックに属するかの識別子（再生 ON/OFF・選択可否のキー）。
+function trackKeyOfNote(note) {
+  if (note.dub) return note.dub;
+  if (note.voice) return "h" + note.voice;
+  return "main";
+}
+// 選択可否。既定は可。OFF のトラックは掴めず、範囲選択にも入らない。
+const trackSelectable = (key) => state.trackSelectable[key] !== false;
+const noteSelectable = (note) => trackSelectable(trackKeyOfNote(note));
+// 選択・ヒットテストの対象になるノートだけを返す。
+function selectableNotes() {
+  return allNotes().filter(noteSelectable);
+}
+
 // 現在ある ハモリ声部の voice 番号（昇順）。Tracks の「ハモリN」に対応する。
 function harmonyVoices() {
   if (!state.session) return [];
@@ -2352,6 +2374,28 @@ function rebuildTrackButtons() {
   // ON = トラック色で塗りつぶし + ●、OFF = アウトラインのみ + ○。
   // 色は CSS ではなくインラインで塗る（DUB_COLORS と同一ソースで確実に同期させる）。
   // 各トラックの横に小さな × （削除。Cmd/Ctrl+Z で戻せる）。
+  // 選択可否のトグル。再生の ON/OFF とは別物なので、小さな別ボタンにする。
+  const mkSelBtn = (wrap, key, label) => {
+    const sb = document.createElement("button");
+    const sel = trackSelectable(key);
+    sb.className = "tracksel" + (sel ? " on" : "");
+    sb.textContent = sel ? "選" : "選";
+    sb.style.opacity = sel ? "1" : "0.4";
+    sb.title = label + " の音程バーを" + (sel ? "選択できる（クリックで選択不可に）"
+                                             : "選択できない（クリックで選択可に）") +
+      "。選択不可のバーは暗く表示され、範囲選択にも入りません";
+    sb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.trackSelectable[key] = !trackSelectable(key);
+      if (!trackSelectable(key))          // 選択中だったバーは選択から外す
+        setSelection(state.selection.filter((sg) => {
+          const n = noteOf(sg); return n && noteSelectable(n);
+        }));
+      rebuildTrackButtons(); draw();
+    });
+    wrap.appendChild(sb);
+  };
+
   const mk = (label, trackIdx, on, sid, fn) => {
     const wrap = document.createElement("span");
     wrap.className = "trackwrap";
@@ -2375,6 +2419,7 @@ function rebuildTrackButtons() {
       "。録音中のモニターにも反映";
     b.addEventListener("click", fn);
     wrap.appendChild(b);
+    mkSelBtn(wrap, trackIdx === 0 ? "main" : sid, label);
     const x = document.createElement("button");
     x.className = "trackx"; x.textContent = "×";
     x.disabled = !!(state.rec && state.rec.active) || state.audio.playing;
@@ -2406,6 +2451,7 @@ function rebuildTrackButtons() {
       onTrackToggle("h" + voice);      // 再生中でも即座に効く（音量ノードで切替）
     });
     wrap.appendChild(b);
+    mkSelBtn(wrap, "h" + voice, label);
     const x = document.createElement("button");
     x.className = "trackx"; x.textContent = "×";
     x.disabled = !!(state.rec && state.rec.active) || state.audio.playing;
