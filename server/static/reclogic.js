@@ -70,6 +70,8 @@
     return buf;
   }
 
-  return { AUDIO_CONSTRAINTS, checkAudioConstraints, meterFromPeak,
-           concatFloat32, encodeWavFloat32 };
+  return {
+    AUDIO_CONSTRAINTS, checkAudioConstraints, meterFromPeak,
+    concatFloat32, encodeWavFloat32
+  };
 });

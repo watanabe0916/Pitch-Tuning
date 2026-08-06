@@ -115,7 +115,7 @@ def analyze(
 
 
 def _windowed_rms(x: np.ndarray, sr: int, times: np.ndarray,
-                  win_sec: float = 0.030) -> np.ndarray:
+                win_sec: float = 0.030) -> np.ndarray:
     """各フレーム時刻を中心とする窓の RMS を求める（累積和で高速化）。"""
     win = max(1, int(round(win_sec * sr)))
     half = win // 2

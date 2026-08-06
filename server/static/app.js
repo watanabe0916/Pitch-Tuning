@@ -181,7 +181,7 @@ function ensureSpacers() {
   Object.assign(gridwrap().style, { position: "relative", overflowX: "auto", overflowY: "auto" });
   Object.assign(keyswrap().style, { position: "relative", overflow: "hidden" });
   Object.assign(els.bcanvas.parentElement.style,
-                { position: "relative", overflowX: "auto", overflowY: "hidden" });
+    { position: "relative", overflowX: "auto", overflowY: "hidden" });
   _spacersReady = true;
 }
 
@@ -515,8 +515,8 @@ function drawF0Curve(ctx, v, vis) {
 const DUB_COLORS = [
   { base: "201,106,152", bright: "232,140,185", stroke: "240,170,205" },  // ローズ
   { base: "155,127,214", bright: "180,155,235", stroke: "201,184,240" },  // すみれ
-  { base: "152,184,84",  bright: "175,205,110", stroke: "200,222,154" },  // 若葉
-  { base: "94,159,212",  bright: "125,185,235", stroke: "168,205,240" },  // 空
+  { base: "152,184,84", bright: "175,205,110", stroke: "200,222,154" },  // 若葉
+  { base: "94,159,212", bright: "125,185,235", stroke: "168,205,240" },  // 空
 ];
 function dubColorOf(note) {
   const i = state.dubs.findIndex((d) => d.sessionId === note.dub);
@@ -837,8 +837,10 @@ function applySnapshot(snap) {
     if (cur) { cur.notes = sd.notes; cur.dirty = true; newDubs.push(cur); }
     else {
       const reg = state.sessReg[sd.sessionId];
-      newDubs.push({ sessionId: sd.sessionId, notes: sd.notes,
-        rmsDb: reg ? reg.rmsDb : null, buffer: null, dirty: true, enabled: true });
+      newDubs.push({
+        sessionId: sd.sessionId, notes: sd.notes,
+        rmsDb: reg ? reg.rmsDb : null, buffer: null, dirty: true, enabled: true
+      });
     }
   }
   state.dubs = newDubs;
@@ -1367,11 +1369,11 @@ function harmonySourceSegs() {
 // UI 要素が揃っているか（古い HTML がキャッシュされている場合の保険）。
 // 欠けていてもアプリ全体は動き、ハモリガイドだけが無効になる。
 const HARM_UI = !!(els.harmtoggle && els.harmkey && els.harmkeyinfo
-                   && els.harmdeg && els.harmdir && els.harmmake);
+  && els.harmdeg && els.harmdir && els.harmmake);
 
 // キー選択肢（自動 + 24キー）を一度だけ作る。
 if (HARM_UI) (function buildKeyOptions() {
-  const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   for (const mode of ["major", "minor"]) {
     for (let t = 0; t < 12; t++) {
       const o = document.createElement("option");
@@ -1468,9 +1470,11 @@ function createHarmonyFromGuides() {
     if (!segs.length) continue;
     // 元のノート単位を保つ。同じノート内の境界だけが遷移補間の対象なので、
     // ここをばらすとハモリ側の音のつながりが元と変わってしまう。
-    const nn = { id: PL.newId(), voice, segments: segs.map((sg) => Object.assign({}, sg, {
-      id: PL.newId(), pitchOffsetCents: target.get(sg) - sg.baseCents,
-    })) };
+    const nn = {
+      id: PL.newId(), voice, segments: segs.map((sg) => Object.assign({}, sg, {
+        id: PL.newId(), pitchOffsetCents: target.get(sg) - sg.baseCents,
+      }))
+    };
     state.session.notes.push(nn);
     for (const sg of nn.segments) newSel.push(sg);
   }
@@ -1482,31 +1486,31 @@ function createHarmonyFromGuides() {
   const dirLabel = state.harmony.direction === "up" ? "上" : "下";
   const idx = harmonyVoices().indexOf(voice) + 1;
   setStatus(`ハモリ${idx} を追加（${PL.keyName(key.tonic, key.mode)} の` +
-            `${state.harmony.degree}度${dirLabel} / ${newSel.length} バー）。全選択中です`);
+    `${state.harmony.degree}度${dirLabel} / ${newSel.length} バー）。全選択中です`);
 }
 
 if (HARM_UI) {
-els.harmmake.addEventListener("click", createHarmonyFromGuides);
-els.harmtoggle.addEventListener("click", () => {
-  state.harmony.on = !state.harmony.on;
-  syncHarmonyUI(); draw();
-  const k = activeKey();
-  setStatus(!state.harmony.on ? "ガイドを非表示にしました"
-    : k ? `ガイド: ${PL.keyName(k.tonic, k.mode)} の${state.harmony.degree}度${state.harmony.direction === "up" ? "上" : "下"}`
+  els.harmmake.addEventListener("click", createHarmonyFromGuides);
+  els.harmtoggle.addEventListener("click", () => {
+    state.harmony.on = !state.harmony.on;
+    syncHarmonyUI(); draw();
+    const k = activeKey();
+    setStatus(!state.harmony.on ? "ガイドを非表示にしました"
+      : k ? `ガイド: ${PL.keyName(k.tonic, k.mode)} の${state.harmony.degree}度${state.harmony.direction === "up" ? "上" : "下"}`
         : "キーが判定できません。キーを手動で指定してください");
-});
-els.harmkey.addEventListener("change", () => {
-  const v = els.harmkey.value;
-  state.harmony.key = v === "auto" ? null
-    : { tonic: parseInt(v.split(":")[0], 10), mode: v.split(":")[1] };
-  syncHarmonyUI(); draw();
-});
-els.harmdeg.addEventListener("change", () => {
-  state.harmony.degree = parseInt(els.harmdeg.value, 10); draw();
-});
-els.harmdir.addEventListener("change", () => {
-  state.harmony.direction = els.harmdir.value; draw();
-});
+  });
+  els.harmkey.addEventListener("change", () => {
+    const v = els.harmkey.value;
+    state.harmony.key = v === "auto" ? null
+      : { tonic: parseInt(v.split(":")[0], 10), mode: v.split(":")[1] };
+    syncHarmonyUI(); draw();
+  });
+  els.harmdeg.addEventListener("change", () => {
+    state.harmony.degree = parseInt(els.harmdeg.value, 10); draw();
+  });
+  els.harmdir.addEventListener("change", () => {
+    state.harmony.direction = els.harmdir.value; draw();
+  });
 }
 
 // ノイズ低減はスライダーを右へ動かすほど強く下げる（表示は実際の減衰量 dB）。
@@ -1630,7 +1634,7 @@ els.vzoomout.addEventListener("click", () => zoomVBy(1 / 1.4));
 const WHEEL_LINE_PX = 16;    // deltaMode=行 のときの 1行あたり px
 function wheelDelta(e) {
   const k = e.deltaMode === 1 ? WHEEL_LINE_PX
-          : e.deltaMode === 2 ? gridwrap().clientHeight : 1;
+    : e.deltaMode === 2 ? gridwrap().clientHeight : 1;
   return { dx: e.deltaX * k, dy: e.deltaY * k };
 }
 gridwrap().addEventListener("wheel", (e) => {
@@ -1746,10 +1750,10 @@ els.file.addEventListener("change", async (e) => {
     // サーバーから削除し（sp/ap のメモリ解放）、レジストリを作り直す。
     for (const sid of Object.keys(state.sessReg)) {
       if (sid !== j.sessionId)
-        fetch(`/api/session/${sid}`, { method: "DELETE" }).catch(() => {});
+        fetch(`/api/session/${sid}`, { method: "DELETE" }).catch(() => { });
     }
     if (oldSid && oldSid !== j.sessionId && !state.sessReg[oldSid])
-      fetch(`/api/session/${oldSid}`, { method: "DELETE" }).catch(() => {});
+      fetch(`/api/session/${oldSid}`, { method: "DELETE" }).catch(() => { });
     state.dubs = [];
     state.harmEnabled = {};        // 旧セッションのハモリ設定は持ち越さない
     state.sessReg = {}; state.sessReg[j.sessionId] = regFromSession(j);
@@ -2048,10 +2052,12 @@ async function startRecording() {
     }
 
     const chunks = [];
-    state.rec = { active: true, mode, stream, ctx, node, chunks,
-                  peak: 0, meterRAF: 0, monitorT0, monGains,
-                  firstChunkTime: 0, firstChunkLen: 0,
-                  t0ms: performance.now(), maxDb: -Infinity };
+    state.rec = {
+      active: true, mode, stream, ctx, node, chunks,
+      peak: 0, meterRAF: 0, monitorT0, monGains,
+      firstChunkTime: 0, firstChunkLen: 0,
+      t0ms: performance.now(), maxDb: -Infinity
+    };
     node.port.onmessage = (e) => {
       const r = state.rec;
       if (!r) return;
@@ -2067,7 +2073,7 @@ async function startRecording() {
     if (state.metronome.on) startMetronome(ctx);   // 録音中のメトロノーム（ヘッドホン前提）
     setStatus(mode === "overdub"
       ? "録音中…（既存の音声を再生中。ヘッドホン推奨）停止すると 録音" +
-        (state.dubs.length + 2) + " として追加されます"
+      (state.dubs.length + 2) + " として追加されます"
       : "録音中… ピークが -12dBFS 付近になるように（0dBFS でクリップ）");
     startMeter();
   } catch (err) {
@@ -2382,7 +2388,7 @@ function rebuildTrackButtons() {
     sb.textContent = sel ? "選" : "選";
     sb.style.opacity = sel ? "1" : "0.4";
     sb.title = label + " の音程バーを" + (sel ? "選択できる（クリックで選択不可に）"
-                                             : "選択できない（クリックで選択可に）") +
+      : "選択できない（クリックで選択可に）") +
       "。選択不可のバーは暗く表示され、範囲選択にも入りません";
     sb.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2491,7 +2497,7 @@ function deleteTrack(sid) {
       state.audio.buffer = null;                   // 主バッファは作り直し
       // 伴奏は新しい主セッションへ付け替え（元ファイルを保持している場合のみ）
       if (state.backing && state.backing.file) {
-        uploadBacking(state.backing.file, state.backing).catch(() => {});
+        uploadBacking(state.backing.file, state.backing).catch(() => { });
       } else if (state.backing) {
         state.backing = null; els.backinglane.hidden = true;
       }
