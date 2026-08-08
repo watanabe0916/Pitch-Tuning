@@ -1231,22 +1231,39 @@ els.grid.addEventListener("dblclick", (e) => {
 });
 
 // キーボード: S=分割 / M=ミュート / G=音量ツール（押下中）/ Cmd|Ctrl+Z=アンドゥ
+// ショートカットの判定。**e.key だけを見てはいけない**:
+// 日本語 IME が有効だと keydown の key は "Process" になり、S/M/G/A が一切効かなくなる。
+// e.code（物理キー）は IME に影響されないので、両方を見る。
+// 大文字（CapsLock/Shift）も toLowerCase で拾う。
+function isKey(e, letter) {
+  if (typeof e.key === "string" && e.key.toLowerCase() === letter) return true;
+  return e.code === "Key" + letter.toUpperCase();
+}
+// 入力欄にフォーカスがあるときは編集ショートカットを動かさない
+// （BPM やディレイ時間を打っているときに S で分割されてしまうのを防ぐ）。
+function inTextField() {
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el.tagName || "").toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
 window.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+  if ((e.metaKey || e.ctrlKey) && isKey(e, "z")) {
     e.preventDefault();
     if (!state.session || state.audio.playing) return;
     e.shiftKey ? redo() : undo();
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && (e.key === "y" || e.key === "Y")) {
+  if ((e.metaKey || e.ctrlKey) && isKey(e, "y")) {
     e.preventDefault(); if (state.session && !state.audio.playing) redo(); return;
   }
   // コピー/ペースト（音程バー）
-  if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C")) {
+  if ((e.metaKey || e.ctrlKey) && isKey(e, "c")) {
     if (state.session && state.selection.length) { e.preventDefault(); copySelection(); }
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && (e.key === "v" || e.key === "V")) {
+  if ((e.metaKey || e.ctrlKey) && isKey(e, "v")) {
     if (state.session && !state.audio.playing) { e.preventDefault(); pasteClipboard(); }
     return;
   }
@@ -1258,18 +1275,19 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (state.drag) updateSnapLabel(e);
-  if (e.key === "g" || e.key === "G") state.gKey = true;
-  if ((e.key === "a" || e.key === "A") && !e.metaKey && !e.ctrlKey) state.aKey = true;
+  if (inTextField()) return;                      // 入力欄への文字入力を邪魔しない
+  if (isKey(e, "g")) state.gKey = true;
+  if (isKey(e, "a") && !e.metaKey && !e.ctrlKey) state.aKey = true;
   if (!state.session || state.audio.playing || !state.view) return;
   const t = mouseTime();
-  if (e.key === "s" || e.key === "S") {
+  if (isKey(e, "s")) {
     const seg = PL.segAtTime(state.session.notes, t);
     if (seg) {
       const note = noteOf(seg);
       replaceNote(note, PL.splitNote(note, note.segments.indexOf(seg), t));
       commitEdit(true);
     }
-  } else if (e.key === "m" || e.key === "M") {
+  } else if (isKey(e, "m")) {
     // 選択があれば全バーをまとめてミュート切替、なければカーソル下のバー
     let targets = state.selection.length ? state.selection.slice() : [];
     if (!targets.length) { const s = PL.segAtTime(state.session.notes, t); if (s) targets = [s]; }
@@ -1281,8 +1299,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("keyup", (e) => {
-  if (e.key === "g" || e.key === "G") state.gKey = false;
-  if (e.key === "a" || e.key === "A") state.aKey = false;
+  if (isKey(e, "g")) state.gKey = false;
+  if (isKey(e, "a")) state.aKey = false;
   if (state.drag) updateSnapLabel(e);
 });
 

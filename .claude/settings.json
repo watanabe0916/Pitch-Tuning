@@ -15,7 +15,9 @@
       "Bash(curl -s -o /dev/null -w \"server: HTTP %{http_code}\\\\n\" http://localhost:8000/)",
       "Bash(curl -s http://localhost:8000/static/app.js)",
       "Bash(timeout 110 /Users/w.kout/Desktop/Pitch-Tuning/.venv/bin/python keyrobust_fast.py)",
-      "Bash(node tests/test_reclogic.js)"
+      "Bash(node tests/test_reclogic.js)",
+      "Bash(sed -n '/if \\(e.key === \"s\" || e.key === \"S\"\\)/,+10p' app.js)",
+      "Bash(sed -n '/if \\(state.drag\\) updateSnapLabel\\(e\\);/,/const t = mouseTime\\(\\);/p' app.js)"
     ],
     "additionalDirectories": [
       "/Users/w.kout/Desktop/Pitch-Tuning/server/static"
